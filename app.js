@@ -187,20 +187,18 @@ app.use("/api/push", pushRoutes);
 app.use("/api/invite-codes", inviteCodeRoutes);
 
 app.get("/health", (req, res) => {
-  res
-    .status(200)
-    .json({
-      status: "OK",
-      uptime: Math.floor(process.uptime()),
-      timestamp: new Date().toISOString(),
-    });
+  res.status(200).json({
+    status: "OK",
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.get("/", (req, res) => {
   res.json({
     message: "🚀 Rent Management System API is running",
     version: "2.0.0",
-    environment: process.env.NODE_ENV || "development",
+    environment: process.env.NODE_ENV || "Production",
   });
 });
 
