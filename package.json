@@ -1,0 +1,50 @@
+{
+  "name": "rent-management-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Landlord-Tenant Rent Management System — Final Year Project",
+  "main": "app.js",
+  "type": "commonjs",
+  "author": "Your Name",
+  "license": "ISC",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "lint": "eslint . --ext .js",
+    "test": "jest --coverage"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "chalk": "^4.1.2",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.1",
+    "helmet": "^8.1.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.1",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.11.3",
+    "nodemailer": "^8.0.1",
+    "pdfkit": "^0.15.0",
+    "socket.io": "^4.8.1",
+    "web-push": "^3.6.7",
+    "xss-clean": "^0.1.4"
+  },
+  "devDependencies": {
+    "eslint": "^10.0.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.7"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": [
+      "models/**/*.js",
+      "controllers/**/*.js",
+      "middleware/**/*.js"
+    ]
+  }
+}

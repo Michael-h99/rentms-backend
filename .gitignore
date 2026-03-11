@@ -1,0 +1,10 @@
+﻿node_modules/
+.env
+logs/
+uploads/
+fix.js
+fix2.js
+fix3.js
+fix4.js
+fix5.js
+test_query.js
