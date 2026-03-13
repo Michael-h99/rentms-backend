@@ -204,3 +204,4 @@ router.delete("/clear-all", clearAllNotifications);
 router.delete("/:notification_id", deleteNotification);
 
 module.exports = router;
+

@@ -130,3 +130,4 @@ router.patch("/messages/:partner_id/read-all", markConversationRead);
 router.use(handleUploadError);
 
 module.exports = router;
+

@@ -120,3 +120,4 @@ router.post("/send", notificationLimiter, sendNotification);
 router.post("/broadcast", notificationLimiter, broadcastNotification);
 
 module.exports = router;
+
