@@ -1,4 +1,4 @@
-// controllers/paymentController.js
+// controllers/paymentcontroller.js
 // ============================================================
 // All payment endpoints. Delegates heavy lifting to
 // paymentService.js where available.
