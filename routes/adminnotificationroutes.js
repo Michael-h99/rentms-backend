@@ -41,7 +41,7 @@ const {
   broadcastNotification,
   getAdminNotificationStats,
   getAllNotificationsAdmin,
-} = require("../controllers/notificationController");
+} = require("../controllers/notificationcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All routes require valid JWT (401) + admin role (403)

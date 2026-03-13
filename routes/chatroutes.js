@@ -35,7 +35,7 @@ const {
   markConversationRead,
   deleteMessage,
   getUnreadCount,
-} = require("../controllers/chatController");
+} = require("../controllers/chatcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All chat routes require a valid JWT — 401 if missing/expired

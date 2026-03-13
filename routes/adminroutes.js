@@ -45,7 +45,7 @@ const {
   triggerUserPasswordReset,
   getAllPayments,
   getAllMaintenance,
-} = require("../controllers/adminController");
+} = require("../controllers/admincontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All admin routes require valid JWT (401) + admin role (403)

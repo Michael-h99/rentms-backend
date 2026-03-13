@@ -36,7 +36,7 @@ const {
   sendPushToPlaza,
   getPushStats,
   getSubscriptions,
-} = require("../controllers/pushController");
+} = require("../controllers/pushcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All push routes require a valid JWT — 401 if missing/expired

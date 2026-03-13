@@ -46,7 +46,7 @@ const {
   getMonthlySummary,
   updateMaintenanceStatus,
   getMaintenanceLogs,
-} = require("../controllers/maintenanceController");
+} = require("../controllers/maintenancecontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All maintenance routes require a valid JWT — 401 if missing/expired

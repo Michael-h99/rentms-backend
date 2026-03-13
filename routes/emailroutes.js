@@ -45,7 +45,7 @@ const {
   resendFailedEmail,
   getEmailStats,
   getEmailLogs,
-} = require("../controllers/emailController");
+} = require("../controllers/emailcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All email routes require a valid JWT — 401 if missing/expired
@@ -175,3 +175,6 @@ router.post(
 );
 
 module.exports = router;
+
+
+

@@ -62,7 +62,7 @@ const {
   getLandlordGroups,
   getGroupMessages,
   sendGroupMessageLandlord,
-} = require("../controllers/landlordController");
+} = require("../controllers/landlordcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All landlord routes require valid JWT (401) + landlord or admin role (403)
@@ -250,3 +250,6 @@ router.post(
 router.use(handleUploadError);
 
 module.exports = router;
+
+
+

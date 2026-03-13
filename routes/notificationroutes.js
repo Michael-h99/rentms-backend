@@ -51,7 +51,7 @@ const {
   clearAllNotifications,
   getAdminNotificationStats,
   getAllNotificationsAdmin,
-} = require("../controllers/notificationController");
+} = require("../controllers/notificationcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All notification routes require a valid JWT — 401 if missing/expired

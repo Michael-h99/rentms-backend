@@ -35,7 +35,7 @@ const {
   getAllPayments,
   verifyPayment,
   updatePaymentStatus,
-} = require("../controllers/paymentController");
+} = require("../controllers/paymentcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // All payment routes require a valid JWT — 401 if missing/expired
@@ -139,3 +139,6 @@ router.patch(
 );
 
 module.exports = router;
+
+
+

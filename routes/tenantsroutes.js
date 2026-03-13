@@ -42,7 +42,7 @@ const {
   leaveGroup,
   getGroupMessages,
   sendGroupMessage,
-} = require("../controllers/tenantController");
+} = require("../controllers/tenantcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 // Every route below requires valid JWT (401) + tenant role (403)

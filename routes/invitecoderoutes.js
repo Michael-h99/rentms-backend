@@ -14,7 +14,7 @@ const {
   listCodes,
   createCode,
   revokeCode,
-} = require("../controllers/inviteCodeController");
+} = require("../controllers/invitecodecontroller");
 
 // All landlord invite code routes require auth + landlord role
 router.use(authMiddleware);
@@ -39,3 +39,6 @@ router.post("/", generalLimiter, createCode);
 router.delete("/:id", generalLimiter, revokeCode);
 
 module.exports = router;
+
+
+

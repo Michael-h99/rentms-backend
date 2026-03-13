@@ -46,7 +46,7 @@ const {
   forgotPassword,
   resetPassword,
   changePassword,
-} = require("../controllers/authController");
+} = require("../controllers/authcontroller");
 
 // ════════════════════════════════════════════════════════════
 // PUBLIC ROUTES — No authentication required
@@ -160,3 +160,6 @@ router.post("/change-password", authMiddleware, authLimiter, changePassword);
 router.use(handleUploadError);
 
 module.exports = router;
+
+
+
