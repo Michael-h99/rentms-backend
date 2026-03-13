@@ -1,4 +1,4 @@
-// controllers/adminNotificationController.js
+// controllers/adminnotificationcontroller.js
 // ============================================================
 // Admin notification analytics — read-only aggregation
 // queries on the notifications table. Wired to
@@ -14,7 +14,7 @@
 //   — NO plaza_id column on notifications
 //
 // Import path from routes:
-//   require("../controllers/adminNotificationController")
+//   require("../controllers/adminnotificationontroller")
 // ============================================================
 
 const db = require("../utils/db");

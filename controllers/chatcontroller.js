@@ -1,4 +1,4 @@
-// controllers/chatController.js
+// controllers/chatcontroller.js
 // ============================================================
 // Direct messaging between users (tenant ↔ landlord,
 // landlord ↔ admin, etc.). All roles can send and receive.
@@ -14,7 +14,7 @@
 //   messages.timestamp   : TIMESTAMP  ← not created_at
 //
 // Import path from routes:
-//   require("../controllers/chatController")
+//   require("../controllers/chatcontroller")
 // ============================================================
 
 const db = require("../utils/db");

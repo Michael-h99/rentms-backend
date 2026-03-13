@@ -1,4 +1,4 @@
-// controllers/adminController.js
+// controllers/admincontroller.js
 // ============================================================
 // All admin-only endpoints. Admin-scoped equivalents of
 // cross-role functions (payments, maintenance) live here so
@@ -11,7 +11,7 @@
 //   users.deleted_at : DATETIME NULL  (soft-delete)
 //
 // Import path from routes:
-//   require("../controllers/adminController")
+//   require("../controllers/admincontroller")
 // ============================================================
 
 const crypto = require("crypto");

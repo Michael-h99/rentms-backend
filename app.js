@@ -30,18 +30,18 @@ const {
   errorHandler,
 } = require("./middleware/errorMiddleware");
 
-const authRoutes = require("./routes/authroutes");
-const tenantRoutes = require("./routes/tenantsroutes");
-const landlordRoutes = require("./routes/landlordroutes");
-const adminRoutes = require("./routes/adminroutes");
-const adminNotificationRoutes = require("./routes/adminnotificationroutes");
-const paymentRoutes = require("./routes/paymentroutes");
-const chatRoutes = require("./routes/chatroutes");
-const maintenanceRoutes = require("./routes/maintenanceroutes");
-const notificationRoutes = require("./routes/notificationroutes");
-const emailRoutes = require("./routes/emailroutes");
-const pushRoutes = require("./routes/pushroutes");
-const inviteCodeRoutes = require("./routes/invitecoderoutes");
+const authroutes = require("./routes/authroutes");
+const tenantroutes = require("./routes/tenantsroutes");
+const landlordroutes = require("./routes/landlordroutes");
+const adminroutes = require("./routes/adminroutes");
+const adminnotificationroutes = require("./routes/adminnotificationroutes");
+const paymentroutes = require("./routes/paymentroutes");
+const chatroutes = require("./routes/chatroutes");
+const maintenanceroutes = require("./routes/maintenanceroutes");
+const notificationroutes = require("./routes/notificationroutes");
+const emailroutes = require("./routes/emailroutes");
+const pushroutes = require("./routes/pushroutes");
+const invitecoderoutes = require("./routes/invitecoderoutes");
 
 const REQUIRED_ENV = ["JWT_SECRET", "DB_HOST", "DB_USER", "DB_NAME"];
 const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
@@ -173,18 +173,18 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
 }
 
 // ── Routes ────────────────────────────────────────────────────
-app.use("/api/auth", authLimiter, authRoutes);
-app.use("/api/tenant", tenantRoutes);
-app.use("/api/landlord", landlordRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api/admin/notifications", adminNotificationRoutes);
-app.use("/api/payments", paymentLimiter, paymentRoutes);
-app.use("/api/chat", chatRoutes);
-app.use("/api/maintenance", maintenanceRoutes);
-app.use("/api/notifications", notificationRoutes);
-app.use("/api/email", emailRoutes);
-app.use("/api/push", pushRoutes);
-app.use("/api/invite-codes", inviteCodeRoutes);
+app.use("/api/auth", authLimiter, authroutes);
+app.use("/api/tenant", tenantroutes);
+app.use("/api/landlord", landlordroutes);
+app.use("/api/admin", adminroutes);
+app.use("/api/admin/notifications", adminnotificationroutes);
+app.use("/api/payments", paymentLimiter, paymentroutes);
+app.use("/api/chat", chatroutes);
+app.use("/api/maintenance", maintenanceroutes);
+app.use("/api/notifications", notificationroutes);
+app.use("/api/email", emailroutes);
+app.use("/api/push", pushroutes);
+app.use("/api/invite-codes", invitecoderoutes);
 
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -218,7 +218,7 @@ const PORT = parseInt(process.env.PORT, 10) || 5000;
         chalk.greenBright(`✅ Server running → http://localhost:${PORT}`),
       );
       console.log(
-        chalk.cyan(`🌍 Environment : ${process.env.NODE_ENV || "development"}`),
+        chalk.cyan(`🌍 Environment : ${process.env.NODE_ENV || "production"}`),
       );
       console.log(chalk.cyan(`🔗 Frontend    : ${ALLOWED_ORIGINS[0]}`));
       console.log(chalk.cyan(`📋 Logs        : logs/server.log`));

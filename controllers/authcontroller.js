@@ -1,4 +1,4 @@
-// controllers/authController.js
+// controllers/authcontroller.js
 // ============================================================
 // Handles: register (with invite code), login, logout, refresh,
 //          forgot/reset password, change password,
@@ -13,7 +13,7 @@
 //   users.status            : ENUM('active','suspended','blacklisted')
 //
 // Import path from routes:
-//   require("../controllers/authController")
+//   require("../controllers/authcontroller")
 // ============================================================
 
 const crypto = require("crypto");
