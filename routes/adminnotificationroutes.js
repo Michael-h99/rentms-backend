@@ -28,12 +28,12 @@ const {
   generalLimiter,
 } = require("../middleware/ratelimitMiddleware");
 
-// ── Analytics controllers (adminNotificationController) ──────
+// ── Analytics controllers (adminnotificationcontroller) ──────
 const {
   getNotificationStats,
   getDailyNotificationTrend,
   getEngagementMetrics,
-} = require("../controllers/adminNotificationController");
+} = require("../controllers/adminnotificationcontroller");
 
 // ── Core notification controllers (notificationController) ───
 const {
@@ -58,7 +58,7 @@ router.use(roleMiddleware(["admin"]));
  * Overall notification counts with read rate breakdown.
  * Filterable by type, user_id, from/to date range.
  * Query params: type, user_id, plaza_id, from, to
- * Source: adminNotificationController (dedicated analytics queries)
+ * Source: adminnotificationcontroller (dedicated analytics queries)
  */
 router.get("/stats", generalLimiter, getNotificationStats);
 
@@ -83,7 +83,7 @@ router.get("/all", generalLimiter, getAllNotificationsAdmin);
  * GET /api/admin/notifications/daily-trend
  * Daily notification volume trend for dashboard charts.
  * Query params: days (1–90, default 7), from, to, type
- * Source: adminNotificationController
+ * Source: adminnotificationcontroller
  */
 router.get("/daily-trend", generalLimiter, getDailyNotificationTrend);
 
@@ -91,7 +91,7 @@ router.get("/daily-trend", generalLimiter, getDailyNotificationTrend);
  * GET /api/admin/notifications/engagement
  * Read rates and engagement metrics broken down by type.
  * Query params: from, to, type
- * Source: adminNotificationController
+ * Source: adminnotificationcontroller
  */
 router.get("/engagement", generalLimiter, getEngagementMetrics);
 
