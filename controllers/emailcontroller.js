@@ -1,4 +1,4 @@
-// controllers/emailController.js
+// controllers/emailcontroller.js
 // ============================================================
 // All email endpoints — sends via Nodemailer transporter
 // stored on app (app.set("transporter", ...)) and logs every
@@ -14,7 +14,7 @@
 //   users.full_name         : VARCHAR(150) NULL
 //
 // Import path from routes:
-//   require("../controllers/emailController")
+//   require("../controllers/emailcontroller")
 // ============================================================
 
 const db = require("../utils/db");
