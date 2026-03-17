@@ -61,6 +61,19 @@ const {
  *             notifies landlord.
  * Rate limited — prevents automated bulk account creation.
  */
+
+// GET /api/auth/validate-code?code=XX-XXXX
+router.get("/validate-code", generalLimiter, async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).json({ error: true, message: "code is required" });
+  try {
+    const InviteCode = require("../models/invitecodeModel");
+    const ic = await InviteCode.validate(code.trim().toUpperCase());
+    return res.json({ success: true, data: ic });
+  } catch (e) {
+    return res.status(400).json({ success: false, data: null, message: e.message });
+  }
+});
 router.post("/register", authLimiter, register);
 
 /**
@@ -160,6 +173,7 @@ router.post("/change-password", authMiddleware, authLimiter, changePassword);
 router.use(handleUploadError);
 
 module.exports = router;
+
 
 
 
