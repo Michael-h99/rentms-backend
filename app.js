@@ -65,7 +65,15 @@ if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(compression());
-app.use(helmet());
+
+// ── Helmet — relax cross-origin policies so uploaded images
+//    can be loaded by the Vercel frontend
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false,
+  }),
+);
 
 const ALLOWED_ORIGINS = process.env.FRONTEND_URL
   ? [process.env.FRONTEND_URL]
@@ -86,7 +94,18 @@ app.use(
 );
 
 app.use("/api", generalLimiter);
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// ── FIX: serve uploaded files with CORP header so browsers
+//    allow cross-origin image loading from the Vercel frontend
+app.use(
+  "/uploads",
+  (req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  },
+  express.static(path.join(__dirname, "uploads")),
+);
 
 const logStream = fs.createWriteStream(
   path.join(__dirname, "logs", "server.log"),
