@@ -1,17 +1,7 @@
 // controllers/tenantController.js
 // ============================================================
-// All tenant-scoped actions not covered by a dedicated controller
-// (payments, maintenance, notifications each have their own).
-//
-// Covers:
-//   Dashboard  — overview, lease, payment summary, alerts
-//   Lease      — view active lease, history, renewal request
-//   Plaza      — view plaza details, neighbours
-//   Groups     — join, leave, paginated messages, send message
-//
-// Import path: ../controllers/tenantController
-// Utils path : ../utils/  (one level up from controllers/)
-// Services   : ../services/
+// All tenant-scoped actions not covered by a dedicated controller.
+// Covers: Dashboard, Lease, Plaza, Groups
 // ============================================================
 
 const db = require("../utils/db");
@@ -46,12 +36,8 @@ const resolveFileType = (mime) => {
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════
 
-// GET /api/tenant/dashboard
-// Returns active lease, this-month payment summary, overdue flag,
-// open maintenance count, unread notification count.
 const getDashboard = asyncHandler(async (req, res) => {
   const tenantId = req.user.id;
-
   const lease = await LeaseService.getActiveLease(tenantId);
 
   let paymentSummary = {
@@ -59,6 +45,7 @@ const getDashboard = asyncHandler(async (req, res) => {
     total_paid: 0,
     last_payment_date: null,
   };
+
   if (lease) {
     const [[s]] = await db.execute(
       `SELECT
@@ -111,21 +98,17 @@ const getDashboard = asyncHandler(async (req, res) => {
 // LEASE
 // ═══════════════════════════════════════════════════════════════
 
-// GET /api/tenant/lease
 const getMyLease = asyncHandler(async (req, res) => {
   const lease = await LeaseService.getActiveLease(req.user.id);
   if (!lease) throw new AppError("No active lease found", 404);
   return res.json({ success: true, data: lease });
 });
 
-// GET /api/tenant/lease/history
 const getLeaseHistory = asyncHandler(async (req, res) => {
   const result = await LeaseService.getByTenant(req.user.id, req.query);
   return res.json({ success: true, ...result });
 });
 
-// POST /api/tenant/lease/renewal
-// Body: { message? }
 const requestLeaseRenewal = asyncHandler(async (req, res) => {
   const tenantId = req.user.id;
   const lease = await LeaseService.getActiveLease(tenantId);
@@ -159,7 +142,6 @@ const requestLeaseRenewal = asyncHandler(async (req, res) => {
 // PLAZA
 // ═══════════════════════════════════════════════════════════════
 
-// GET /api/tenant/plaza
 const getMyPlaza = asyncHandler(async (req, res) => {
   const [rows] = await db.execute(
     `SELECT
@@ -179,8 +161,6 @@ const getMyPlaza = asyncHandler(async (req, res) => {
   return res.json({ success: true, data: rows[0] });
 });
 
-// GET /api/tenant/neighbours
-// Returns name, unit, avatar — no email for privacy
 const getMyNeighbours = asyncHandler(async (req, res) => {
   const tenantId = req.user.id;
   const [tenancy] = await db.execute(
@@ -207,65 +187,114 @@ const getMyNeighbours = asyncHandler(async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 // GET /api/tenant/groups
+// FIX: original query used group_members JOIN but if tenant hasn't
+// formally joined via group_members, they'd see no groups.
+// Now also returns groups for their plaza directly as a fallback.
 const getMyGroups = asyncHandler(async (req, res) => {
+  const tenantId = req.user.id;
+
+  /* FIX: fetch groups two ways:
+     1. Groups the tenant explicitly joined (via group_members)
+     2. Groups belonging to their active plaza (so they always see their group)
+     Merge and deduplicate by group ID. */
   const [rows] = await db.execute(
-    `SELECT
-       pg.id, pg.name, pg.plaza_id, pg.created_at,
+    `SELECT DISTINCT
+       pg.id, pg.name, pg.invite_code, pg.plaza_id, pg.created_at,
        p.name AS plaza_name, p.location AS plaza_location,
        gm.joined_at,
-       COUNT(DISTINCT gm2.user_id) AS member_count
-     FROM group_members gm
-     JOIN plaza_groups  pg  ON pg.id     = gm.group_id
-     JOIN plazas        p   ON p.id      = pg.plaza_id
-     LEFT JOIN group_members gm2 ON gm2.group_id = pg.id
-     WHERE gm.user_id = ?
-     GROUP BY pg.id, gm.joined_at
-     ORDER BY gm.joined_at DESC`,
-    [req.user.id],
+       (SELECT COUNT(DISTINCT user_id) FROM group_members WHERE group_id = pg.id) AS member_count,
+       (SELECT content FROM group_messages WHERE group_id = pg.id ORDER BY created_at DESC LIMIT 1) AS last_message,
+       (SELECT created_at FROM group_messages WHERE group_id = pg.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
+     FROM plaza_groups pg
+     JOIN plazas p ON p.id = pg.plaza_id
+     JOIN tenancies t ON t.plaza_id = p.id
+     LEFT JOIN group_members gm ON gm.group_id = pg.id AND gm.user_id = ?
+     WHERE t.tenant_id = ? AND t.status = 'active' AND p.deleted_at IS NULL
+     GROUP BY pg.id
+     ORDER BY pg.created_at DESC`,
+    [tenantId, tenantId],
   );
-  return res.json({ success: true, data: rows });
+
+  return res.json({ success: true, groups: rows });
 });
 
 // POST /api/tenant/groups/join
 // Body: { invite_code }
 const joinGroup = asyncHandler(async (req, res) => {
   const tenantId = req.user.id;
-  const invite_code = req.body.invite_code?.trim();
+  const invite_code = (req.body.invite_code || "").trim().toUpperCase();
+
   if (!invite_code) throw new AppError("invite_code is required", 400);
 
-  const [codes] = await db.execute(
-    `SELECT ic.*, p.landlord_id, p.name AS plaza_name
-     FROM invite_codes ic JOIN plazas p ON p.id = ic.plaza_id
-     WHERE ic.code = UPPER(?) AND ic.status = 'active' AND ic.expires_at > NOW()`,
+  /* ─────────────────────────────────────────────────────────────
+     BUG FIX (ROOT CAUSE):
+     The original code queried the `invite_codes` table — which stores
+     REGISTRATION codes used when a new tenant signs up. These are
+     completely different from GROUP invite codes.
+
+     Group invite codes are stored in the `plaza_groups` table in the
+     `invite_code` column, generated by the landlord on the Messages page.
+
+     Fix: query `plaza_groups` directly using the invite_code column.
+  ───────────────────────────────────────────────────────────────── */
+  const [[group]] = await db.execute(
+    `SELECT
+       pg.id, pg.name, pg.plaza_id, pg.invite_code,
+       p.landlord_id, p.name AS plaza_name,
+       p.deleted_at
+     FROM plaza_groups pg
+     JOIN plazas p ON p.id = pg.plaza_id
+     WHERE UPPER(pg.invite_code) = ?
+       AND p.deleted_at IS NULL`,
     [invite_code],
   );
-  if (!codes.length) throw new AppError("Invalid or expired invite code", 400);
-  const ic = codes[0];
 
-  const [groups] = await db.execute(
-    `SELECT id, name FROM plaza_groups WHERE plaza_id = ? LIMIT 1`,
-    [ic.plaza_id],
+  if (!group) throw new AppError("Invalid or expired invite code", 400);
+
+  /* FIX: verify tenant has an active tenancy in this plaza
+     A tenant should only be able to join groups for their own plaza */
+  const [[tenancy]] = await db.execute(
+    `SELECT id FROM tenancies
+     WHERE tenant_id = ? AND plaza_id = ? AND status = 'active'
+     LIMIT 1`,
+    [tenantId, group.plaza_id],
   );
-  if (!groups.length) throw new AppError("No group found for this plaza", 404);
-  const group = groups[0];
 
-  const [[{ exists }]] = await db.execute(
-    `SELECT COUNT(*) AS exists FROM group_members WHERE group_id = ? AND user_id = ?`,
+  if (!tenancy)
+    throw new AppError(
+      "You must be an active tenant in this plaza to join its group",
+      403,
+    );
+
+  /* FIX: check if already a member before inserting */
+  const [[{ already_member }]] = await db.execute(
+    `SELECT COUNT(*) AS already_member FROM group_members
+     WHERE group_id = ? AND user_id = ?`,
     [group.id, tenantId],
   );
-  if (exists > 0)
-    throw new AppError("You are already a member of this group", 400);
 
+  if (already_member > 0) {
+    /* Already a member — return success with group info so frontend
+       can open the chat without showing an error */
+    return res.status(200).json({
+      success: true,
+      message: "You are already a member of this group",
+      group: { id: group.id, name: group.name, plaza_name: group.plaza_name },
+    });
+  }
+
+  /* Insert into group_members */
   await db.execute(
     `INSERT INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, NOW())`,
     [group.id, tenantId],
   );
 
+  /* Notify landlord */
   await NotificationService.create({
-    recipientId: ic.landlord_id,
+    recipientId: group.landlord_id,
     senderId: tenantId,
     type: "new_tenant",
-    message: `${req.user.full_name || req.user.username} joined the group for ${ic.plaza_name}`,
+    message: `${req.user.full_name || req.user.username} joined the group for ${group.plaza_name}`,
     referenceId: group.id,
     io: req.app.get("io"),
   });
@@ -273,15 +302,14 @@ const joinGroup = asyncHandler(async (req, res) => {
   await logActivity(
     tenantId,
     "group_joined",
-    `Joined group "${group.name}" (ID: ${group.id})`,
+    `Joined group "${group.name}" (ID: ${group.id}) for plaza "${group.plaza_name}"`,
     { ip: req.ip },
   );
 
   return res.status(201).json({
     success: true,
     message: "Joined group successfully",
-    group_id: group.id,
-    group_name: group.name,
+    group: { id: group.id, name: group.name, plaza_name: group.plaza_name },
   });
 });
 
@@ -304,9 +332,12 @@ const leaveGroup = asyncHandler(async (req, res) => {
 
   const [plazaRows] = await db.execute(
     `SELECT p.landlord_id, pg.name AS group_name
-     FROM plaza_groups pg JOIN plazas p ON p.id = pg.plaza_id WHERE pg.id = ?`,
+     FROM plaza_groups pg
+     JOIN plazas p ON p.id = pg.plaza_id
+     WHERE pg.id = ?`,
     [groupId],
   );
+
   if (plazaRows.length) {
     await NotificationService.create({
       recipientId: plazaRows[0].landlord_id,
@@ -331,11 +362,18 @@ const getGroupMessages = asyncHandler(async (req, res) => {
   const groupId = parseId(req.params.group_id);
   if (!groupId) throw new AppError("Invalid group ID", 400);
 
-  const [[{ exists }]] = await db.execute(
-    `SELECT COUNT(*) AS exists FROM group_members WHERE group_id = ? AND user_id = ?`,
+  /* FIX: membership check now also accepts tenants who belong to the plaza
+     even if they haven't been inserted into group_members yet */
+  const [[{ is_member }]] = await db.execute(
+    `SELECT COUNT(*) AS is_member
+     FROM plaza_groups pg
+     JOIN plazas p    ON p.id  = pg.plaza_id
+     JOIN tenancies t ON t.plaza_id = p.id
+     WHERE pg.id = ? AND t.tenant_id = ? AND t.status = 'active'
+     LIMIT 1`,
     [groupId, tenantId],
   );
-  if (!exists) throw new AppError("You are not a member of this group", 403);
+  if (!is_member) throw new AppError("You are not a member of this group", 403);
 
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(100, parseInt(req.query.limit, 10) || 20);
@@ -347,8 +385,11 @@ const getGroupMessages = asyncHandler(async (req, res) => {
   );
 
   const [messages] = await db.query(
+    /* FIX: return both 'content' and 'message' alias for frontend compatibility */
     `SELECT
-       gm.id, gm.group_id, gm.sender_id, gm.content,
+       gm.id, gm.group_id, gm.sender_id,
+       gm.content,
+       gm.content AS message,
        gm.file_url, gm.file_type, gm.created_at,
        u.full_name  AS sender_name,
        u.avatar_url AS sender_avatar
@@ -367,14 +408,15 @@ const getGroupMessages = asyncHandler(async (req, res) => {
 });
 
 // POST /api/tenant/groups/:group_id/messages
-// Body: { content? } + optional file field "file"
 const sendGroupMessage = asyncHandler(async (req, res) => {
   const tenantId = req.user.id;
   const groupId = parseId(req.params.group_id);
   if (!groupId) throw new AppError("Invalid group ID", 400);
 
-  const { content } = req.body;
-  if (!content?.trim() && !req.file)
+  /* FIX: accept both 'content' and 'message' field names */
+  const content = (req.body.content || req.body.message || "").trim();
+
+  if (!content && !req.file)
     throw new AppError("A message or file attachment is required", 400);
 
   let file_url = null,
@@ -389,30 +431,66 @@ const sendGroupMessage = asyncHandler(async (req, res) => {
     file_type = resolveFileType(req.file.mimetype);
   }
 
-  const [[{ exists }]] = await db.execute(
-    `SELECT COUNT(*) AS exists FROM group_members WHERE group_id = ? AND user_id = ?`,
+  /* FIX: membership check via plaza tenancy (same as getGroupMessages) */
+  const [[{ is_member }]] = await db.execute(
+    `SELECT COUNT(*) AS is_member
+     FROM plaza_groups pg
+     JOIN plazas p    ON p.id  = pg.plaza_id
+     JOIN tenancies t ON t.plaza_id = p.id
+     WHERE pg.id = ? AND t.tenant_id = ? AND t.status = 'active'
+     LIMIT 1`,
     [groupId, tenantId],
   );
-  if (!exists) throw new AppError("You are not a member of this group", 403);
+  if (!is_member) throw new AppError("You are not a member of this group", 403);
 
-  await db.execute(
+  const [result] = await db.execute(
     `INSERT INTO group_messages (group_id, sender_id, content, file_url, file_type, created_at)
      VALUES (?, ?, ?, ?, ?, NOW())`,
-    [groupId, tenantId, content?.trim() || null, file_url, file_type],
+    [groupId, tenantId, content || null, file_url, file_type],
   );
 
+  /* Emit real-time event */
+  const io = req.app.get("io");
+  if (io) {
+    io.to(`group_${groupId}`).emit("group_message", {
+      id: result.insertId,
+      group_id: groupId,
+      sender_id: tenantId,
+      content: content || null,
+      message: content || null,
+      file_url,
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  /* Notify all other group members */
   const [members] = await db.execute(
     `SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ?`,
     [groupId, tenantId],
   );
-  if (members.length) {
+
+  /* FIX: also notify the landlord of this plaza even if not in group_members */
+  const [[plazaRow]] = await db.execute(
+    `SELECT p.landlord_id FROM plaza_groups pg
+     JOIN plazas p ON p.id = pg.plaza_id WHERE pg.id = ?`,
+    [groupId],
+  );
+
+  const recipientIds = [
+    ...new Set([
+      ...members.map((m) => m.user_id),
+      ...(plazaRow ? [plazaRow.landlord_id] : []),
+    ]),
+  ].filter((id) => id !== tenantId);
+
+  if (recipientIds.length) {
     await NotificationService.createBulk({
-      recipientIds: members.map((m) => m.user_id),
+      recipientIds,
       senderId: tenantId,
       type: "new_message",
       message: `New message in your group from ${req.user.full_name || req.user.username}`,
       groupedKey: `group_msg_${groupId}`,
-      io: req.app.get("io"),
+      io,
     });
   }
 
@@ -423,9 +501,11 @@ const sendGroupMessage = asyncHandler(async (req, res) => {
     { ip: req.ip },
   );
 
-  return res
-    .status(201)
-    .json({ success: true, message: "Message sent successfully" });
+  return res.status(201).json({
+    success: true,
+    message: "Message sent successfully",
+    message_id: result.insertId,
+  });
 });
 
 module.exports = {
