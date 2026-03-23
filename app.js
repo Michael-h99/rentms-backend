@@ -42,6 +42,8 @@ const notificationroutes = require("./routes/notificationroutes");
 const emailroutes = require("./routes/emailroutes");
 const pushroutes = require("./routes/pushroutes");
 const invitecoderoutes = require("./routes/invitecoderoutes");
+// TEMP: migration route — remove after visiting /api/migrate once
+const migrateroutes = require("./routes/migrate");
 
 const REQUIRED_ENV = ["JWT_SECRET", "DB_HOST", "DB_USER", "DB_NAME"];
 const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
@@ -95,7 +97,7 @@ app.use(
 
 app.use("/api", generalLimiter);
 
-// ── FIX: serve uploaded files with CORP header so browsers
+// ── Serve uploaded files with CORP header so browsers
 //    allow cross-origin image loading from the Vercel frontend
 app.use(
   "/uploads",
@@ -204,6 +206,8 @@ app.use("/api/notifications", notificationroutes);
 app.use("/api/email", emailroutes);
 app.use("/api/push", pushroutes);
 app.use("/api/invite-codes", invitecoderoutes);
+// TEMP: run once at /api/migrate then remove this line + routes/migrate.js
+app.use("/api", migrateroutes);
 
 app.get("/health", (req, res) => {
   res.status(200).json({
