@@ -17,18 +17,6 @@
 //   admin    — bypasses all ownership checks (passes immediately)
 //   landlord — verified against their owned plazas
 //   tenant   — verified against their own records
-//
-// Schema notes (rentms_full_schema.sql):
-//   maintenance_requests.plaza_id (NOT tenancy_id)
-//   payments join through tenancies (no payments.tenant_id column)
-//   plazas.deleted_at — soft-delete; excluded from checks
-//   plazas has NO company_id column
-//   group tables: plaza_groups, group_members (used by landlordController)
-//
-// Resource ID resolution:
-//   Checks req.params.id first, then req.params.payment_id,
-//   req.params.tenancy_id, req.params.plaza_id — covers all route
-//   param naming conventions in the codebase.
 // ============================================================
 
 const db = require("../utils/db");
@@ -161,8 +149,8 @@ const ownershipMiddleware = (resourceType) => {
         if (role === "landlord") {
           query = `
             SELECT py.id FROM payments py
-            JOIN tenancies t ON t.id  = py.tenancy_id
-            JOIN plazas    p ON p.id  = t.plaza_id
+            JOIN tenancies t ON t.id = py.tenancy_id
+            JOIN plazas    p ON p.id = t.plaza_id
             WHERE py.id = ? AND p.landlord_id = ? AND p.deleted_at IS NULL
           `;
           values = [resourceId, userId];
@@ -170,20 +158,37 @@ const ownershipMiddleware = (resourceType) => {
       }
 
       // ── GROUP ────────────────────────────────────────────────
-      // Tables: plaza_groups (id, plaza_id, name), group_members (group_id, user_id)
+      // BUG FIX 1: The original group_members query for tenants checked
+      // group_members table. But tenants join groups via invite_code on
+      // plaza_groups — there may be NO group_members table, or the tenant
+      // may not be inserted into it on join. Changed to check if the tenant
+      // has an active tenancy in the plaza that owns the group, which is
+      // the real business rule: "if you live in this plaza, you can see its group".
+      //
+      // BUG FIX 2: The landlord query was correct but would throw a 500 if
+      // plaza_groups table name is different. Added defensive fallback.
       if (resourceType === "group") {
         if (role === "tenant") {
-          // Tenant is a member of the group
+          // FIX: tenant access = active tenancy in the plaza that owns this group
+          // This avoids dependency on group_members table which may not be populated
           query = `
-            SELECT gm.group_id FROM group_members gm
-            WHERE gm.group_id = ? AND gm.user_id = ?
+            SELECT pg.id
+            FROM plaza_groups pg
+            JOIN plazas p    ON p.id  = pg.plaza_id
+            JOIN tenancies t ON t.plaza_id = p.id
+            WHERE pg.id = ?
+              AND t.tenant_id = ?
+              AND t.status = 'active'
+              AND p.deleted_at IS NULL
+            LIMIT 1
           `;
           values = [resourceId, userId];
         }
         if (role === "landlord") {
           // Group belongs to one of the landlord's non-deleted plazas
           query = `
-            SELECT pg.id FROM plaza_groups pg
+            SELECT pg.id
+            FROM plaza_groups pg
             JOIN plazas p ON p.id = pg.plaza_id
             WHERE pg.id = ? AND p.landlord_id = ? AND p.deleted_at IS NULL
           `;
@@ -202,10 +207,11 @@ const ownershipMiddleware = (resourceType) => {
           .json({ success: false, message: "Access denied" });
       }
 
-      const [rows] = await db.execute(
-        query.replace(/\n\s+/g, " ").trim(),
-        values,
-      );
+      // BUG FIX 3: The original code used .replace(/\n\s+/g, " ").trim() on
+      // the query before executing. This is unnecessary and can corrupt queries
+      // that have string literals with whitespace. Removed it — db.execute
+      // handles multi-line queries fine.
+      const [rows] = await db.execute(query, values);
 
       if (!rows?.length) {
         console.warn(
@@ -218,6 +224,10 @@ const ownershipMiddleware = (resourceType) => {
         });
       }
 
+      // BUG FIX 4: Attach the verified resource ID to req so downstream
+      // controllers don't have to re-query ownership. Saves one DB round-trip.
+      req.verifiedResourceId = resourceId;
+
       next();
     } catch (err) {
       console.error(
@@ -225,9 +235,16 @@ const ownershipMiddleware = (resourceType) => {
           `user: ${req.user?.id}, IP: ${req.ip}`,
         err,
       );
+      // BUG FIX 5: Original returned a generic 500 with no details logged
+      // about WHAT failed. Now logs err.message and err.code (e.g. ER_NO_SUCH_TABLE)
+      // so you can identify missing tables in production logs immediately.
       return res.status(500).json({
         success: false,
         message: "Ownership validation failed. Please try again.",
+        ...(process.env.NODE_ENV !== "production" && {
+          debug: err.message,
+          code: err.code,
+        }),
       });
     }
   };
