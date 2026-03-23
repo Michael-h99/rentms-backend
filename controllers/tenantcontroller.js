@@ -193,20 +193,18 @@ const getMyNeighbours = asyncHandler(async (req, res) => {
 const getMyGroups = asyncHandler(async (req, res) => {
   const tenantId = req.user.id;
 
-  /* FIX: fetch groups two ways:
-     1. Groups the tenant explicitly joined (via group_members)
-     2. Groups belonging to their active plaza (so they always see their group)
-     Merge and deduplicate by group ID. */
+  /* FIX: simplified query — no correlated subqueries which crash on some
+     MySQL versions. Get groups by plaza tenancy, then fetch last message
+     and member count separately to avoid subquery issues. */
+
+  /* Step 1: get all groups for the tenant's active plaza */
   const [rows] = await db.execute(
     `SELECT DISTINCT
-       pg.id, pg.name, pg.invite_code, pg.plaza_id, pg.created_at,
+       pg.id, pg.name, pg.plaza_id, pg.created_at,
        p.name AS plaza_name, p.location AS plaza_location,
-       gm.joined_at,
-       (SELECT COUNT(DISTINCT user_id) FROM group_members WHERE group_id = pg.id) AS member_count,
-       (SELECT content FROM group_messages WHERE group_id = pg.id ORDER BY created_at DESC LIMIT 1) AS last_message,
-       (SELECT created_at FROM group_messages WHERE group_id = pg.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
+       gm.joined_at
      FROM plaza_groups pg
-     JOIN plazas p ON p.id = pg.plaza_id
+     JOIN plazas p    ON p.id = pg.plaza_id
      JOIN tenancies t ON t.plaza_id = p.id
      LEFT JOIN group_members gm ON gm.group_id = pg.id AND gm.user_id = ?
      WHERE t.tenant_id = ? AND t.status = 'active' AND p.deleted_at IS NULL
@@ -215,7 +213,50 @@ const getMyGroups = asyncHandler(async (req, res) => {
     [tenantId, tenantId],
   );
 
-  return res.json({ success: true, groups: rows });
+  if (!rows.length) return res.json({ success: true, groups: [] });
+
+  /* Step 2: for each group get last message and member count */
+  const groupIds = rows.map((r) => r.id);
+  const placeholders = groupIds.map(() => "?").join(",");
+
+  const [lastMessages] = await db.execute(
+    `SELECT gm.group_id,
+       gm.content AS last_message,
+       gm.created_at AS last_message_at
+     FROM group_messages gm
+     INNER JOIN (
+       SELECT group_id, MAX(created_at) AS max_at
+       FROM group_messages
+       WHERE group_id IN (${placeholders})
+       GROUP BY group_id
+     ) latest ON latest.group_id = gm.group_id AND gm.created_at = latest.max_at`,
+    groupIds,
+  );
+
+  const [memberCounts] = await db.execute(
+    `SELECT group_id, COUNT(DISTINCT user_id) AS member_count
+     FROM group_members
+     WHERE group_id IN (${placeholders})
+     GROUP BY group_id`,
+    groupIds,
+  );
+
+  /* Step 3: merge */
+  const lastMsgMap = Object.fromEntries(
+    lastMessages.map((m) => [m.group_id, m]),
+  );
+  const memberCountMap = Object.fromEntries(
+    memberCounts.map((m) => [m.group_id, m.member_count]),
+  );
+
+  const enriched = rows.map((g) => ({
+    ...g,
+    last_message: lastMsgMap[g.id]?.last_message || null,
+    last_message_at: lastMsgMap[g.id]?.last_message_at || null,
+    member_count: memberCountMap[g.id] || 0,
+  }));
+
+  return res.json({ success: true, groups: enriched });
 });
 
 // POST /api/tenant/groups/join
