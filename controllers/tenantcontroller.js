@@ -191,70 +191,64 @@ const getMyNeighbours = asyncHandler(async (req, res) => {
 // formally joined via group_members, they'd see no groups.
 // Now also returns groups for their plaza directly as a fallback.
 const getMyGroups = asyncHandler(async (req, res) => {
-  const tenantId = req.user.id;
+  const tenantId = Number(req.user.id);
 
-  /* FIX: simplified query — no correlated subqueries which crash on some
-     MySQL versions. Get groups by plaza tenancy, then fetch last message
-     and member count separately to avoid subquery issues. */
+  /* Step 1: get tenant's active plaza_id */
+  const [[tenancy]] = await db.execute(
+    `SELECT t.plaza_id FROM tenancies t
+     WHERE t.tenant_id = ? AND t.status = 'active'
+     LIMIT 1`,
+    [tenantId],
+  );
 
-  /* Step 1: get all groups for the tenant's active plaza */
-  const [rows] = await db.execute(
-    `SELECT DISTINCT
-       pg.id, pg.name, pg.plaza_id, pg.created_at,
-       p.name AS plaza_name, p.location AS plaza_location,
-       gm.joined_at
+  /* No active tenancy — return empty */
+  if (!tenancy) return res.json({ success: true, groups: [] });
+
+  /* Step 2: get all groups for that plaza */
+  const [groups] = await db.execute(
+    `SELECT pg.id, pg.name, pg.plaza_id, pg.created_at,
+       p.name AS plaza_name, p.location AS plaza_location
      FROM plaza_groups pg
-     JOIN plazas p    ON p.id = pg.plaza_id
-     JOIN tenancies t ON t.plaza_id = p.id
-     LEFT JOIN group_members gm ON gm.group_id = pg.id AND gm.user_id = ?
-     WHERE t.tenant_id = ? AND t.status = 'active' AND p.deleted_at IS NULL
-     GROUP BY pg.id
+     JOIN plazas p ON p.id = pg.plaza_id
+     WHERE pg.plaza_id = ? AND p.deleted_at IS NULL
      ORDER BY pg.created_at DESC`,
-    [tenantId, tenantId],
+    [tenancy.plaza_id],
   );
 
-  if (!rows.length) return res.json({ success: true, groups: [] });
+  if (!groups.length) return res.json({ success: true, groups: [] });
 
-  /* Step 2: for each group get last message and member count */
-  const groupIds = rows.map((r) => r.id);
-  const placeholders = groupIds.map(() => "?").join(",");
+  /* Step 3: for each group, get last message and member count separately */
+  const enriched = await Promise.all(
+    groups.map(async (g) => {
+      /* last message */
+      let last_message = null,
+        last_message_at = null;
+      try {
+        const [[lastMsg]] = await db.execute(
+          `SELECT content AS last_message, created_at AS last_message_at
+         FROM group_messages WHERE group_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+          [g.id],
+        );
+        if (lastMsg) {
+          last_message = lastMsg.last_message;
+          last_message_at = lastMsg.last_message_at;
+        }
+      } catch {}
 
-  const [lastMessages] = await db.execute(
-    `SELECT gm.group_id,
-       gm.content AS last_message,
-       gm.created_at AS last_message_at
-     FROM group_messages gm
-     INNER JOIN (
-       SELECT group_id, MAX(created_at) AS max_at
-       FROM group_messages
-       WHERE group_id IN (${placeholders})
-       GROUP BY group_id
-     ) latest ON latest.group_id = gm.group_id AND gm.created_at = latest.max_at`,
-    groupIds,
+      /* member count */
+      let member_count = 0;
+      try {
+        const [[cnt]] = await db.execute(
+          `SELECT COUNT(DISTINCT user_id) AS member_count FROM group_members WHERE group_id = ?`,
+          [g.id],
+        );
+        member_count = cnt?.member_count || 0;
+      } catch {}
+
+      return { ...g, last_message, last_message_at, member_count };
+    }),
   );
-
-  const [memberCounts] = await db.execute(
-    `SELECT group_id, COUNT(DISTINCT user_id) AS member_count
-     FROM group_members
-     WHERE group_id IN (${placeholders})
-     GROUP BY group_id`,
-    groupIds,
-  );
-
-  /* Step 3: merge */
-  const lastMsgMap = Object.fromEntries(
-    lastMessages.map((m) => [m.group_id, m]),
-  );
-  const memberCountMap = Object.fromEntries(
-    memberCounts.map((m) => [m.group_id, m.member_count]),
-  );
-
-  const enriched = rows.map((g) => ({
-    ...g,
-    last_message: lastMsgMap[g.id]?.last_message || null,
-    last_message_at: lastMsgMap[g.id]?.last_message_at || null,
-    member_count: memberCountMap[g.id] || 0,
-  }));
 
   return res.json({ success: true, groups: enriched });
 });
