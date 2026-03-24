@@ -632,25 +632,37 @@ const getLandlordGroups = asyncHandler(async (req, res) => {
   }
 
   const [rows] = await db.execute(
-    /* FIX: added member_count (distinct tenant members who have joined)
-       and last_message / last_message_at for the group list preview */
+    /* FIX: count members from group_members table (people who joined),
+       not from group_messages (people who sent messages) */
     `SELECT
        pg.id, pg.name, pg.invite_code, pg.created_at,
        p.id AS plaza_id, p.name AS plaza_name,
-       COUNT(DISTINCT gm.id)        AS message_count,
-       COUNT(DISTINCT gm.sender_id) AS member_count,
-       (SELECT content FROM group_messages
-        WHERE group_id = pg.id ORDER BY created_at DESC LIMIT 1) AS last_message,
-       (SELECT created_at FROM group_messages
-        WHERE group_id = pg.id ORDER BY created_at DESC LIMIT 1) AS last_message_at
+       COUNT(DISTINCT mem.user_id) AS member_count
      FROM plaza_groups pg
      JOIN plazas p ON p.id = pg.plaza_id
-     LEFT JOIN group_messages gm ON gm.group_id = pg.id
+     LEFT JOIN group_members mem ON mem.group_id = pg.id
      WHERE ${conditions.join(" AND ")}
      GROUP BY pg.id
      ORDER BY pg.created_at DESC`,
     params,
   );
+
+  /* Get last message for each group separately to avoid subquery issues */
+  for (const row of rows) {
+    try {
+      const [[lastMsg]] = await db.execute(
+        `SELECT content AS last_message, created_at AS last_message_at
+         FROM group_messages WHERE group_id = ?
+         ORDER BY created_at DESC LIMIT 1`,
+        [row.id],
+      );
+      row.last_message = lastMsg?.last_message || null;
+      row.last_message_at = lastMsg?.last_message_at || null;
+    } catch {
+      row.last_message = null;
+      row.last_message_at = null;
+    }
+  }
 
   return res.json({ success: true, data: rows });
 });
