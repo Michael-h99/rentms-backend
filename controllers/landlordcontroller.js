@@ -689,11 +689,15 @@ const getGroupMessages = asyncHandler(async (req, res) => {
 
   const [[{ total }]] = await db.execute(
     "SELECT COUNT(*) AS total FROM group_messages WHERE group_id = ?",
-    [Number(groupId)],
+    [parseInt(groupId, 10)],
   );
 
+  /* FIX: cast all params to int — Aiven MySQL strict mode rejects strings for LIMIT/OFFSET */
+  const limitInt = parseInt(limit, 10);
+  const offsetInt = parseInt(offset, 10);
+  const groupInt = parseInt(groupId, 10);
+
   const [messages] = await db.execute(
-    /* FIX: return 'message' alias alongside 'content' for frontend compatibility */
     `SELECT
        gm.id, gm.sender_id,
        gm.content,
@@ -707,7 +711,7 @@ const getGroupMessages = asyncHandler(async (req, res) => {
      WHERE gm.group_id = ?
      ORDER BY gm.created_at ASC
      LIMIT ? OFFSET ?`,
-    [Number(groupId), Number(limit), Number(offset)],
+    [groupInt, limitInt, offsetInt],
   );
 
   return res.json({
