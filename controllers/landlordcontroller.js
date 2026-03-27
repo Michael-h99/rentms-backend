@@ -668,34 +668,32 @@ const getLandlordGroups = asyncHandler(async (req, res) => {
 });
 
 const getGroupMessages = asyncHandler(async (req, res) => {
-  const landlordId = Number(req.user.id);
-  const groupId = parseId(req.params.id);
-  if (!groupId) throw new AppError("Invalid group ID", 400);
+  const landlordId = parseInt(req.user.id, 10);
+  const groupId = parseInt(req.params.id, 10);
 
-  /* FIX: ownership check inline — ownershipMiddleware("group") was causing 500
-     because it may not handle plaza_groups table correctly */
+  if (!groupId || groupId <= 0) throw new AppError("Invalid group ID", 400);
+  if (!landlordId || landlordId <= 0) throw new AppError("Invalid user", 401);
+
+  /* FIX: use interpolated integers directly — avoids ALL parameterised
+     query type issues with Aiven MySQL strict mode.
+     Safe because both values are parseInt'd to integers above. */
   const [[group]] = await db.execute(
     `SELECT pg.id, pg.name, pg.invite_code, p.id AS plaza_id
      FROM plaza_groups pg
      JOIN plazas p ON p.id = pg.plaza_id
-     WHERE pg.id = ? AND p.landlord_id = ?`,
-    [Number(groupId), landlordId],
+     WHERE pg.id = ${groupId} AND p.landlord_id = ${landlordId}
+     LIMIT 1`,
   );
   if (!group) throw new AppError("Group not found or access denied", 403);
 
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(100, parseInt(req.query.limit, 10) || DEFAULT_LIMIT);
-  const offset = Number((page - 1) * limit);
+  const offset = (page - 1) * limit;
 
+  /* FIX: use interpolated integers for all numeric values */
   const [[{ total }]] = await db.execute(
-    "SELECT COUNT(*) AS total FROM group_messages WHERE group_id = ?",
-    [parseInt(groupId, 10)],
+    `SELECT COUNT(*) AS total FROM group_messages WHERE group_id = ${groupId}`,
   );
-
-  /* FIX: cast all params to int — Aiven MySQL strict mode rejects strings for LIMIT/OFFSET */
-  const limitInt = parseInt(limit, 10);
-  const offsetInt = parseInt(offset, 10);
-  const groupInt = parseInt(groupId, 10);
 
   const [messages] = await db.execute(
     `SELECT
@@ -708,10 +706,9 @@ const getGroupMessages = asyncHandler(async (req, res) => {
        u.role        AS sender_role
      FROM group_messages gm
      JOIN users u ON u.id = gm.sender_id
-     WHERE gm.group_id = ?
+     WHERE gm.group_id = ${groupId}
      ORDER BY gm.created_at ASC
-     LIMIT ? OFFSET ?`,
-    [groupInt, limitInt, offsetInt],
+     LIMIT ${limit} OFFSET ${offset}`,
   );
 
   return res.json({
