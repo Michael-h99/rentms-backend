@@ -1,29 +1,7 @@
 // routes/landlordRoutes.js
 // ============================================================
-// Base path: /api/landlords
+// Base path: /api/landlord  (singular — matches app.js registration)
 // All routes require valid JWT + landlord or admin role.
-//
-// Endpoints:
-//   Plazas:
-//     GET    /api/landlords/plazas                  — own plazas + occupancy
-//     POST   /api/landlords/plazas                  — create plaza
-//     GET    /api/landlords/plazas/:id              — single plaza + live stats
-//     PUT    /api/landlords/plazas/:id              — update plaza
-//     DELETE /api/landlords/plazas/:id              — soft-delete plaza
-//   Tenants:
-//     GET    /api/landlords/plazas/:id/tenants      — list tenants in plaza
-//     POST   /api/landlords/plazas/:id/invite       — generate invite code
-//     DELETE /api/landlords/tenancies/:id/tenant    — expire tenancy
-//   Payments:
-//     GET    /api/landlords/payments                — own payment history
-//   Maintenance:
-//     GET    /api/landlords/maintenance             — own maintenance requests
-//     PATCH  /api/landlords/maintenance/:id/status  — update request status
-//   Groups:
-//     GET    /api/landlords/groups                  — own groups list
-//     POST   /api/landlords/groups                  — create group
-//     GET    /api/landlords/groups/:id/messages     — group message history
-//     POST   /api/landlords/groups/:id/messages     — send message to group
 // ============================================================
 
 const express = require("express");
@@ -42,22 +20,17 @@ const {
 
 // ── Controllers ──────────────────────────────────────────────
 const {
-  // Plazas
   getLandlordPlazas,
   getPlazaById,
   createPlaza,
   updatePlaza,
   deletePlaza,
-  // Tenants
   getPlazaTenants,
   inviteTenant,
   removeTenant,
-  // Payments
   getRentPayments,
-  // Maintenance
   getMaintenanceRequests,
   updateMaintenanceStatus,
-  // Groups
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
@@ -65,7 +38,6 @@ const {
 } = require("../controllers/landlordcontroller");
 
 // ── Global Protection ────────────────────────────────────────
-// All landlord routes require valid JWT (401) + landlord or admin role (403)
 router.use(authMiddleware);
 router.use(roleMiddleware(["admin", "landlord"]));
 
@@ -73,81 +45,27 @@ router.use(roleMiddleware(["admin", "landlord"]));
 // PLAZA MANAGEMENT
 // ════════════════════════════════════════════════════════════
 
-/**
- * GET /api/landlords/plazas
- * All plazas owned by the landlord with occupied/vacant unit counts.
- * Query params: page, limit
- */
 router.get("/plazas", getLandlordPlazas);
-
-/**
- * POST /api/landlords/plazas
- * Create a new plaza.
- * Body: { name, location, total_units }
- */
 router.post("/plazas", createPlaza);
-
-/**
- * GET /api/landlords/plazas/:id
- * Single plaza with live stats: active tenants, this-month revenue,
- * open maintenance count.
- * Returns 403 if the landlord does not own this plaza.
- */
 router.get("/plazas/:id", ownershipMiddleware("plaza"), getPlazaById);
-
-/**
- * PUT /api/landlords/plazas/:id
- * Update plaza name, location, or total_units.
- * ownershipMiddleware confirms plaza belongs to this landlord.
- * Body: { name?, location?, total_units? }
- */
 router.put("/plazas/:id", ownershipMiddleware("plaza"), updatePlaza);
-
-/**
- * DELETE /api/landlords/plazas/:id
- * Soft-delete a plaza (sets deleted_at).
- * Returns 400 if the plaza still has active tenancies.
- */
 router.delete("/plazas/:id", ownershipMiddleware("plaza"), deletePlaza);
 
 // ════════════════════════════════════════════════════════════
 // TENANT MANAGEMENT
 // ════════════════════════════════════════════════════════════
 
-/**
- * GET /api/landlords/plazas/:id/tenants
- * Paginated list of tenants in a plaza with lease details.
- * ownershipMiddleware confirms plaza belongs to this landlord.
- * Query params: page, limit, status ("active"|"expired")
- */
 router.get(
   "/plazas/:id/tenants",
   ownershipMiddleware("plaza"),
   getPlazaTenants,
 );
-
-/**
- * POST /api/landlords/plazas/:id/invite
- * Generate an invite code for a new tenant to self-register.
- * Tenant uses the code at POST /api/auth/register.
- * ownershipMiddleware confirms plaza belongs to this landlord.
- * Body: { unit_number, rent_amount, lease_start, lease_end,
- *         max_uses? (default 1), expires_days? (default 30) }
- * Rate limited — prevents invite code spam.
- */
 router.post(
   "/plazas/:id/invite",
   ownershipMiddleware("plaza"),
   notificationLimiter,
   inviteTenant,
 );
-
-/**
- * DELETE /api/landlords/tenancies/:id/tenant
- * Expire a tenant's active tenancy (status → "expired").
- * Sends a tenancy_update notification to the tenant.
- * ownershipMiddleware confirms tenancy belongs to this landlord's plaza.
- */
 router.delete(
   "/tenancies/:id/tenant",
   ownershipMiddleware("tenancy"),
@@ -158,36 +76,34 @@ router.delete(
 // PAYMENTS
 // ════════════════════════════════════════════════════════════
 
-/**
- * GET /api/landlords/payments
- * All rent payments across the landlord's plazas — paginated.
- * Query params: page, limit, from (YYYY-MM-DD), to (YYYY-MM-DD),
- *               plaza_id, status ("paid"|"pending"|"failed")
- */
 router.get("/payments", getRentPayments);
 
 // ════════════════════════════════════════════════════════════
 // MAINTENANCE
 // ════════════════════════════════════════════════════════════
 
-/**
- * GET /api/landlords/maintenance
- * All maintenance requests across the landlord's plazas.
- * High-priority open requests surfaced first.
- * Query params: page, limit, status, priority, plaza_id
- */
 router.get("/maintenance", getMaintenanceRequests);
 
-/**
- * PATCH /api/landlords/maintenance/:id/status
- * Update the status of a maintenance request.
- * Setting "resolved" auto-sets resolved_at.
- * Writes to maintenance_logs and notifies the tenant.
- * ownershipMiddleware confirms the request belongs to this landlord's plaza.
- * Body: { status, note? }
- *   status: "pending" | "in_progress" | "resolved" | "rejected"
- */
+/* FIX: landlord.js calls PUT /landlord/maintenance/:id — add PUT alias
+   alongside the PATCH route so both work */
 router.patch(
+  "/maintenance/:id",
+  ownershipMiddleware("maintenance_request"),
+  updateMaintenanceStatus,
+);
+router.put(
+  "/maintenance/:id",
+  ownershipMiddleware("maintenance_request"),
+  updateMaintenanceStatus,
+);
+
+/* Keep the original /status sub-path too for backwards compat */
+router.patch(
+  "/maintenance/:id/status",
+  ownershipMiddleware("maintenance_request"),
+  updateMaintenanceStatus,
+);
+router.put(
   "/maintenance/:id/status",
   ownershipMiddleware("maintenance_request"),
   updateMaintenanceStatus,
@@ -195,50 +111,66 @@ router.patch(
 
 // ════════════════════════════════════════════════════════════
 // PLAZA GROUPS
+// FIX: removed ownershipMiddleware("group") from both group message
+// routes — it was querying group_members with wrong params causing
+// "Incorrect arguments to mysqld_stmt_execute" 500 errors.
+// The controller (getGroupMessages, sendGroupMessageLandlord) already
+// does its own ownership check via plaza_groups JOIN plazas.
 // ════════════════════════════════════════════════════════════
 
-/**
- * GET /api/landlords/groups
- * All plaza groups the landlord owns with member counts.
- * Query params: plaza_id? (filter to one plaza)
- */
 router.get("/groups", getLandlordGroups);
-
-/**
- * POST /api/landlords/groups
- * Create a new group for a plaza.
- * Body: { plaza_id, name }
- * Plaza ownership verified in controller.
- */
 router.post("/groups", createPlazaGroup);
 
-/**
- * GET /api/landlords/groups/:id/messages
- * Paginated message history for a group the landlord owns.
- * Ordered oldest → newest for chat view.
- * ownershipMiddleware confirms group belongs to this landlord.
- * Query params: page, limit
- */
-router.get(
-  "/groups/:id/messages",
-  ownershipMiddleware("group"),
-  generalLimiter,
-  getGroupMessages,
-);
+/* FIX: PUT /groups/:id — needed for regenCode() in landlord.js */
+router.put("/groups/:id", async (req, res) => {
+  const db = require("../utils/db");
+  const { AppError, asyncHandler } = require("../utils/errorhandler");
+  const groupId = parseInt(req.params.id, 10);
+  const landlordId = Number(req.user.id);
+  const { invite_code, name } = req.body;
 
-/**
- * POST /api/landlords/groups/:id/messages
- * Send a message to a plaza group — text, file, or both.
- * Emits real-time event via Socket.io to the group_<id> room.
- * Notifies all group members in-app (non-fatal).
- * ownershipMiddleware confirms group belongs to this landlord.
- * Body: { content? } + optional file field "file"
- * File: images/PDF/DOC, 10 MB max — uploads/group_messages/<filename>
- * Rate limited.
- */
+  const [[group]] = await db.execute(
+    `SELECT pg.id FROM plaza_groups pg
+     JOIN plazas p ON p.id = pg.plaza_id
+     WHERE pg.id = ? AND p.landlord_id = ?`,
+    [groupId, landlordId],
+  );
+  if (!group)
+    return res.status(403).json({ success: false, message: "Access denied" });
+
+  const fields = [],
+    params = [];
+  if (invite_code?.trim()) {
+    fields.push("invite_code = ?");
+    params.push(invite_code.trim());
+  }
+  if (name?.trim()) {
+    fields.push("name = ?");
+    params.push(name.trim());
+  }
+  if (!fields.length)
+    return res
+      .status(400)
+      .json({ success: false, message: "Nothing to update" });
+
+  params.push(groupId);
+  await db.execute(
+    `UPDATE plaza_groups SET ${fields.join(", ")} WHERE id = ?`,
+    params,
+  );
+  return res.json({
+    success: true,
+    message: "Group updated",
+    data: { id: groupId, invite_code, name },
+  });
+});
+
+/* GET messages — NO ownershipMiddleware, controller handles auth */
+router.get("/groups/:id/messages", generalLimiter, getGroupMessages);
+
+/* POST messages — NO ownershipMiddleware, controller handles auth */
 router.post(
   "/groups/:id/messages",
-  ownershipMiddleware("group"),
   uploadLimiter,
   upload.groupMessage.single("file"),
   handleUploadError,
@@ -246,12 +178,6 @@ router.post(
 );
 
 // ── Upload error handler ─────────────────────────────────────
-// Must come after all routes that use upload middleware.
 router.use(handleUploadError);
 
 module.exports = router;
-
-
-
-
-
