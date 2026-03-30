@@ -701,7 +701,8 @@ const getGroupMessages = asyncHandler(async (req, res) => {
        gm.content,
        gm.content AS message,
        gm.file_url, gm.file_type, gm.created_at,
-       u.full_name   AS sender_name,
+       COALESCE(u.full_name, u.username) AS sender_name,
+       u.email       AS sender_email,
        u.avatar_url  AS sender_avatar,
        u.role        AS sender_role
      FROM group_messages gm
