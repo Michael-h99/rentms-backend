@@ -78,19 +78,22 @@ const ownershipMiddleware = (resourceType) => {
 
       // ── TENANCY ─────────────────────────────────────────────
       if (resourceType === "tenancy") {
+        /* FIX: use interpolated integers — Aiven MySQL strict mode rejects
+           parameterized values for some queries */
+        const rId = parseInt(resourceId, 10);
+        const uId = parseInt(userId, 10);
         if (role === "tenant") {
-          // Tenant owns the tenancy directly
-          query = `SELECT t.id FROM tenancies t WHERE t.id = ? AND t.tenant_id = ?`;
-          values = [resourceId, userId];
+          query = `SELECT t.id FROM tenancies t WHERE t.id = ${rId} AND t.tenant_id = ${uId} LIMIT 1`;
+          values = [];
         }
         if (role === "landlord") {
-          // Tenancy belongs to one of the landlord's non-deleted plazas
           query = `
             SELECT t.id FROM tenancies t
             JOIN plazas p ON p.id = t.plaza_id
-            WHERE t.id = ? AND p.landlord_id = ? AND p.deleted_at IS NULL
+            WHERE t.id = ${rId} AND p.landlord_id = ${uId} AND p.deleted_at IS NULL
+            LIMIT 1
           `;
-          values = [resourceId, userId];
+          values = [];
         }
       }
 
