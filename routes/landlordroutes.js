@@ -34,6 +34,7 @@ const {
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
+  getGroupMembers,
   sendGroupMessageLandlord,
 } = require("../controllers/landlordcontroller");
 
@@ -164,6 +165,9 @@ router.put("/groups/:id", async (req, res) => {
     data: { id: groupId, invite_code, name },
   });
 });
+
+/* GET group members */
+router.get("/groups/:id/members", generalLimiter, getGroupMembers);
 
 /* GET messages — NO ownershipMiddleware, controller handles auth */
 router.get("/groups/:id/messages", generalLimiter, getGroupMessages);

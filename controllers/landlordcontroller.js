@@ -718,6 +718,46 @@ const getGroupMessages = asyncHandler(async (req, res) => {
   });
 });
 
+const getGroupMembers = asyncHandler(async (req, res) => {
+  const landlordId = parseInt(req.user.id, 10);
+  const groupId = parseInt(req.params.id, 10);
+  if (!groupId) throw new AppError("Invalid group ID", 400);
+
+  /* Verify ownership */
+  const [[group]] = await db.execute(
+    `SELECT pg.id, pg.name, p.id AS plaza_id, p.name AS plaza_name
+     FROM plaza_groups pg
+     JOIN plazas p ON p.id = pg.plaza_id
+     WHERE pg.id = ${groupId} AND p.landlord_id = ${landlordId} LIMIT 1`,
+  );
+  if (!group) throw new AppError("Group not found or access denied", 403);
+
+  /* Get users who are in group_members table */
+  const [members] = await db.execute(
+    `SELECT
+       gm.user_id, gm.joined_at,
+       u.full_name, u.email, u.avatar_url,
+       t.unit_number
+     FROM group_members gm
+     JOIN users u ON u.id = gm.user_id
+     LEFT JOIN tenancies t ON t.tenant_id = gm.user_id AND t.plaza_id = ${group.plaza_id} AND t.status = 'active'
+     WHERE gm.group_id = ${groupId}
+     ORDER BY gm.joined_at ASC`,
+  );
+
+  const data = members.map((m) => ({
+    user_id: m.user_id,
+    full_name: m.full_name,
+    email: m.email,
+    avatar_url: m.avatar_url,
+    unit_number: m.unit_number,
+    joined_at: m.joined_at,
+    joined: true,
+  }));
+
+  return res.json({ success: true, data });
+});
+
 const sendGroupMessageLandlord = asyncHandler(async (req, res) => {
   const landlordId = Number(req.user.id);
   const groupId = parseId(req.params.id);
@@ -811,5 +851,6 @@ module.exports = {
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
+  getGroupMembers,
   sendGroupMessageLandlord,
 };
