@@ -50,14 +50,14 @@ router.use(roleMiddleware(["admin", "landlord"]));
 router.get("/plazas", getLandlordPlazas);
 router.post(
   "/plazas",
-  upload.avatar.single("image"),
+  upload.profile.single("image"),
   handleUploadError,
   createPlaza,
 );
 /* Plaza standalone image upload — for the upload zone in plazas.html */
 router.post(
   "/plazas/upload-image",
-  upload.avatar.single("image"),
+  upload.profile.single("image"),
   handleUploadError,
   async (req, res) => {
     if (!req.file)
@@ -72,7 +72,7 @@ router.get("/plazas/:id", ownershipMiddleware("plaza"), getPlazaById);
 router.put(
   "/plazas/:id",
   ownershipMiddleware("plaza"),
-  upload.avatar.single("image"),
+  upload.profile.single("image"),
   handleUploadError,
   updatePlaza,
 );
