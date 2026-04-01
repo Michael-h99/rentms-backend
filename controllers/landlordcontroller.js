@@ -870,66 +870,8 @@ const uploadPlazaImage = asyncHandler(async (req, res) => {
   });
 });
 
-const uploadPlazaImage = asyncHandler(async (req, res) => {
-  const landlordId = parseInt(req.user.id, 10);
-  const plazaId = parseInt(req.params.id, 10);
-  if (!plazaId) throw new AppError("Invalid plaza ID", 400);
-
-  await requirePlazaOwnership(plazaId, landlordId);
-
-  if (!req.file) throw new AppError("No image file provided", 400);
-
-  const imageUrl = `uploads/plazas/${req.file.filename}`;
-
-  await db.execute(
-    "UPDATE plazas SET image_url = ?, updated_at = NOW() WHERE id = ?",
-    [imageUrl, plazaId],
-  );
-
-  const full = `https://rentms-backend-5.onrender.com/${imageUrl}`;
-
-  return res.status(200).json({
-    success: true,
-    message: "Plaza image updated",
-    data: { image_url: full },
-  });
-});
-
-const uploadPlazaImage = asyncHandler(async (req, res) => {
-  const landlordId = parseInt(req.user.id, 10);
-  const plazaId = parseInt(req.params.id, 10);
-  if (!plazaId) throw new AppError("Invalid plaza ID", 400);
-
-  /* Verify ownership */
-  await requirePlazaOwnership(plazaId, landlordId);
-
-  if (!req.file) throw new AppError("No image file provided", 400);
-
-  const image_url = `uploads/plazas/${req.file.filename}`;
-
-  /* Save image_url to plazas table */
-  await db.execute(
-    `UPDATE plazas SET image_url = ?, updated_at = NOW() WHERE id = ?`,
-    [image_url, plazaId],
-  );
-
-  await logActivity(
-    landlordId,
-    "plaza_image_updated",
-    `Updated image for plaza ${plazaId}`,
-    { ip: req.ip },
-  );
-
-  return res.json({
-    success: true,
-    message: "Plaza image updated",
-    data: { image_url },
-  });
-});
-
 module.exports = {
   getLandlordPlazas,
-  uploadPlazaImage,
   getPlazaById,
   createPlaza,
   updatePlaza,
@@ -940,7 +882,6 @@ module.exports = {
   getRentPayments,
   getMaintenanceRequests,
   updateMaintenanceStatus,
-  uploadPlazaImage,
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
