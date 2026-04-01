@@ -39,7 +39,7 @@ const getLandlordPlazas = asyncHandler(async (req, res) => {
   );
 
   const [rows] = await db.query(
-    `SELECT p.id, p.name, p.location, p.total_units, p.created_at,
+    `SELECT p.id, p.name, p.location, p.total_units, p.image_url, p.created_at,
        COUNT(CASE WHEN t.status = 'active' THEN 1 END) AS occupied_units,
        p.total_units - COUNT(CASE WHEN t.status = 'active' THEN 1 END) AS vacant_units
      FROM plazas p
@@ -93,9 +93,12 @@ const createPlaza = asyncHandler(async (req, res) => {
   if (isNaN(units) || units <= 0)
     throw new AppError("total_units must be a positive integer", 400);
 
+  /* FIX: support optional plaza image upload */
+  const image_url = req.file ? `uploads/plazas/${req.file.filename}` : null;
+
   const [result] = await db.execute(
-    "INSERT INTO plazas (landlord_id, name, location, total_units, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())",
-    [landlordId, name.trim(), location.trim(), units],
+    "INSERT INTO plazas (landlord_id, name, location, total_units, image_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())",
+    [landlordId, name.trim(), location.trim(), units, image_url],
   );
 
   await logActivity(
@@ -135,6 +138,12 @@ const updatePlaza = asyncHandler(async (req, res) => {
       throw new AppError("total_units must be a positive integer", 400);
     fields.push("total_units = ?");
     params.push(units);
+  }
+
+  /* FIX: support plaza image update */
+  if (req.file) {
+    fields.push("image_url = ?");
+    params.push(`uploads/plazas/${req.file.filename}`);
   }
 
   if (!fields.length) throw new AppError("No fields to update", 400);
@@ -836,8 +845,91 @@ const sendGroupMessageLandlord = asyncHandler(async (req, res) => {
   });
 });
 
+const uploadPlazaImage = asyncHandler(async (req, res) => {
+  const landlordId = parseInt(req.user.id, 10);
+  const plazaId = parseInt(req.params.id, 10);
+  if (!plazaId) throw new AppError("Invalid plaza ID", 400);
+
+  await requirePlazaOwnership(plazaId, landlordId);
+
+  if (!req.file) throw new AppError("No image file provided", 400);
+
+  const imageUrl = `uploads/plazas/${req.file.filename}`;
+
+  await db.execute(
+    `UPDATE plazas SET image_url = ?, updated_at = NOW() WHERE id = ${plazaId}`,
+    [imageUrl],
+  );
+
+  const fullUrl = `https://rentms-backend-5.onrender.com/${imageUrl}`;
+
+  return res.json({
+    success: true,
+    message: "Plaza image uploaded successfully",
+    data: { image_url: fullUrl },
+  });
+});
+
+const uploadPlazaImage = asyncHandler(async (req, res) => {
+  const landlordId = parseInt(req.user.id, 10);
+  const plazaId = parseInt(req.params.id, 10);
+  if (!plazaId) throw new AppError("Invalid plaza ID", 400);
+
+  await requirePlazaOwnership(plazaId, landlordId);
+
+  if (!req.file) throw new AppError("No image file provided", 400);
+
+  const imageUrl = `uploads/plazas/${req.file.filename}`;
+
+  await db.execute(
+    "UPDATE plazas SET image_url = ?, updated_at = NOW() WHERE id = ?",
+    [imageUrl, plazaId],
+  );
+
+  const full = `https://rentms-backend-5.onrender.com/${imageUrl}`;
+
+  return res.status(200).json({
+    success: true,
+    message: "Plaza image updated",
+    data: { image_url: full },
+  });
+});
+
+const uploadPlazaImage = asyncHandler(async (req, res) => {
+  const landlordId = parseInt(req.user.id, 10);
+  const plazaId = parseInt(req.params.id, 10);
+  if (!plazaId) throw new AppError("Invalid plaza ID", 400);
+
+  /* Verify ownership */
+  await requirePlazaOwnership(plazaId, landlordId);
+
+  if (!req.file) throw new AppError("No image file provided", 400);
+
+  const image_url = `uploads/plazas/${req.file.filename}`;
+
+  /* Save image_url to plazas table */
+  await db.execute(
+    `UPDATE plazas SET image_url = ?, updated_at = NOW() WHERE id = ?`,
+    [image_url, plazaId],
+  );
+
+  await logActivity(
+    landlordId,
+    "plaza_image_updated",
+    `Updated image for plaza ${plazaId}`,
+    { ip: req.ip },
+  );
+
+  return res.json({
+    success: true,
+    message: "Plaza image updated",
+    data: { image_url },
+  });
+});
+
 module.exports = {
   getLandlordPlazas,
+  uploadPlazaImage,
   getPlazaById,
   createPlaza,
   updatePlaza,
@@ -848,9 +940,11 @@ module.exports = {
   getRentPayments,
   getMaintenanceRequests,
   updateMaintenanceStatus,
+  uploadPlazaImage,
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
   getGroupMembers,
   sendGroupMessageLandlord,
+  uploadPlazaImage,
 };

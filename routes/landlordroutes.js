@@ -31,11 +31,13 @@ const {
   getRentPayments,
   getMaintenanceRequests,
   updateMaintenanceStatus,
+  uploadPlazaImage,
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
   getGroupMembers,
   sendGroupMessageLandlord,
+  uploadPlazaImage,
 } = require("../controllers/landlordcontroller");
 
 // ── Global Protection ────────────────────────────────────────
@@ -47,10 +49,56 @@ router.use(roleMiddleware(["admin", "landlord"]));
 // ════════════════════════════════════════════════════════════
 
 router.get("/plazas", getLandlordPlazas);
-router.post("/plazas", createPlaza);
+router.post(
+  "/plazas",
+  upload.plazaImage.single("image"),
+  handleUploadError,
+  createPlaza,
+);
+/* Plaza standalone image upload — for the upload zone in plazas.html */
+router.post(
+  "/plazas/upload-image",
+  upload.plazaImage.single("image"),
+  handleUploadError,
+  async (req, res) => {
+    if (!req.file)
+      return res
+        .status(400)
+        .json({ success: false, message: "No image provided" });
+    const imageUrl = "uploads/plazas/" + req.file.filename;
+    return res.json({ success: true, data: { image_url: imageUrl } });
+  },
+);
 router.get("/plazas/:id", ownershipMiddleware("plaza"), getPlazaById);
-router.put("/plazas/:id", ownershipMiddleware("plaza"), updatePlaza);
+router.put(
+  "/plazas/:id",
+  ownershipMiddleware("plaza"),
+  upload.plazaImage.single("image"),
+  handleUploadError,
+  updatePlaza,
+);
 router.delete("/plazas/:id", ownershipMiddleware("plaza"), deletePlaza);
+
+/* POST /plazas/:id/image — upload plaza cover photo */
+router.post(
+  "/plazas/:id/image",
+  ownershipMiddleware("plaza"),
+  uploadLimiter,
+  upload.groupMessage.single("image"),
+  handleUploadError,
+  uploadPlazaImage,
+);
+
+/* POST /plazas/:id/image — upload plaza cover photo
+   Uses groupMessage upload config (images allowed, 10MB max) */
+router.post(
+  "/plazas/:id/image",
+  ownershipMiddleware("plaza"),
+  uploadLimiter,
+  upload.groupMessage.single("image"),
+  handleUploadError,
+  uploadPlazaImage,
+);
 
 // ════════════════════════════════════════════════════════════
 // TENANT MANAGEMENT
