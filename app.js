@@ -1,8 +1,4 @@
 // app.js
-// ============================================================
-// Main server entry point — lives in backend/ root
-// ============================================================
-
 require("dotenv").config();
 
 const express = require("express");
@@ -42,6 +38,8 @@ const notificationroutes = require("./routes/notificationroutes");
 const emailroutes = require("./routes/emailroutes");
 const pushroutes = require("./routes/pushroutes");
 const invitecoderoutes = require("./routes/invitecoderoutes");
+// TEMP: migration — remove after visiting /api/migrate once
+const migrateroutes = require("./routes/migrate");
 
 const REQUIRED_ENV = ["JWT_SECRET", "DB_HOST", "DB_USER", "DB_NAME"];
 const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
@@ -66,8 +64,6 @@ app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(compression());
 
-// ── Helmet — relax cross-origin policies so uploaded images
-//    can be loaded by the Vercel frontend
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -95,8 +91,6 @@ app.use(
 
 app.use("/api", generalLimiter);
 
-// ── Serve uploaded files with CORP header so browsers
-//    allow cross-origin image loading from the Vercel frontend
 app.use(
   "/uploads",
   (req, res, next) => {
@@ -137,26 +131,20 @@ app.set("io", io);
 
 io.on("connection", (socket) => {
   console.log(chalk.blue("🔌 Socket connected:"), socket.id);
-
   socket.on("join", (userId) => {
     const uid = parseInt(userId, 10);
     if (!uid || uid <= 0) return;
     socket.join(`user_${uid}`);
     console.log(chalk.blue(`✅ User ${uid} joined room user_${uid}`));
   });
-
   socket.on("join_admin", () => {
     socket.join("admin_room");
-    console.log(chalk.blue("✅ Socket joined admin_room:", socket.id));
   });
-
   socket.on("join_group", (groupId) => {
     const gid = parseInt(groupId, 10);
     if (!gid || gid <= 0) return;
     socket.join(`group_${gid}`);
-    console.log(chalk.blue(`✅ Socket joined group_${gid}`));
   });
-
   socket.on("disconnect", (reason) => {
     console.log(
       chalk.gray("❌ Socket disconnected:", socket.id, `(${reason})`),
@@ -168,12 +156,10 @@ const transporter = nodemailer.createTransport({
   service: process.env.EMAIL_SERVICE || "gmail",
   auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
 });
-
 transporter.verify((err) => {
   if (err) console.error(chalk.red("❌ Email transporter error:"), err.message);
   else console.log(chalk.green("📩 Email transporter ready"));
 });
-
 app.set("transporter", transporter);
 
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
@@ -204,22 +190,24 @@ app.use("/api/notifications", notificationroutes);
 app.use("/api/email", emailroutes);
 app.use("/api/push", pushroutes);
 app.use("/api/invite-codes", invitecoderoutes);
+// TEMP: run once at /api/migrate then remove this line + routes/migrate.js
+app.use("/api", migrateroutes);
 
-app.get("/health", (req, res) => {
+app.get("/health", (req, res) =>
   res.status(200).json({
     status: "OK",
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
-  });
-});
+  }),
+);
 
-app.get("/", (req, res) => {
+app.get("/", (req, res) =>
   res.json({
     message: "🚀 Rent Management System API is running",
     version: "2.0.0",
     environment: process.env.NODE_ENV || "Production",
-  });
-});
+  }),
+);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -230,7 +218,6 @@ const PORT = parseInt(process.env.PORT, 10) || 5000;
   try {
     await db.execute("SELECT 1");
     console.log(chalk.green("✅ Database connection verified"));
-
     server.listen(PORT, () => {
       console.log("─────────────────────────────────────────────────");
       console.log(
@@ -263,11 +250,9 @@ const gracefulShutdown = (signal) => {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
 process.on("unhandledRejection", (reason) => {
   console.error(chalk.red("🔥 Unhandled Promise Rejection:"), reason);
 });
-
 process.on("uncaughtException", (error) => {
   console.error(chalk.red("💥 Uncaught Exception:"), error.message);
   console.error(error.stack);
