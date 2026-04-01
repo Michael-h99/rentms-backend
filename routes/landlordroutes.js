@@ -64,7 +64,8 @@ router.post(
       return res
         .status(400)
         .json({ success: false, message: "No image provided" });
-    const imageUrl = "uploads/plazas/" + req.file.filename;
+    /* FIX: file is saved to uploads/profile/ by upload.profile middleware */
+    const imageUrl = "uploads/profile/" + req.file.filename;
     return res.json({ success: true, data: { image_url: imageUrl } });
   },
 );
