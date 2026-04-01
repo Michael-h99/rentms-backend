@@ -1,40 +1,35 @@
-// routes/migrate.js
-// ONE-TIME migration — adds image_url column to plazas table
-// Visit /api/migrate once then remove this file
-
+// routes/migrate.js — ONE-TIME migration
 const express = require("express");
 const router = express.Router();
 const db = require("../utils/db");
 
 router.get("/migrate", async (req, res) => {
-  const results = [];
   try {
-    // Add image_url column to plazas if it doesn't exist
-    await db.execute(`
-      ALTER TABLE plazas
-      ADD COLUMN IF NOT EXISTS image_url VARCHAR(500) NULL DEFAULT NULL
+    /* Check if column already exists first */
+    const [[row]] = await db.execute(`
+      SELECT COUNT(*) AS cnt
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME   = 'plazas'
+        AND COLUMN_NAME  = 'image_url'
     `);
-    results.push({ step: "alter plazas", status: "✅ image_url column added" });
 
-    return res.json({
-      success: true,
-      message: "Migration complete. Remove this route now.",
-      results,
-    });
-  } catch (err) {
-    // If column already exists, MySQL throws error 1060
-    if (
-      err.code === "ER_DUP_FIELDNAME" ||
-      err.message.includes("Duplicate column")
-    ) {
+    if (row.cnt > 0) {
       return res.json({
         success: true,
-        message: "Column already exists — no action needed.",
-        results: [
-          { step: "alter plazas", status: "✅ image_url already exists" },
-        ],
+        message: "image_url column already exists — nothing to do.",
       });
     }
+
+    await db.execute(
+      `ALTER TABLE plazas ADD COLUMN image_url VARCHAR(500) NULL DEFAULT NULL`,
+    );
+    return res.json({
+      success: true,
+      message:
+        "✅ Migration complete. image_url column added to plazas. Remove this route now.",
+    });
+  } catch (err) {
     return res
       .status(500)
       .json({ success: false, message: err.message, code: err.code });
