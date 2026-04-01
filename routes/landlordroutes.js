@@ -31,7 +31,6 @@ const {
   getRentPayments,
   getMaintenanceRequests,
   updateMaintenanceStatus,
-  uploadPlazaImage,
   createPlazaGroup,
   getLandlordGroups,
   getGroupMessages,
