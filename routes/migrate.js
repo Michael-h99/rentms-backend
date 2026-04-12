@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../utils/db");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 
 router.get("/migrate", async (req, res) => {
   try {
