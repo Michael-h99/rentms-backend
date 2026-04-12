@@ -175,6 +175,9 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   app.set("webpush", null);
 }
 
+const migrateroutes = require("./routes/migrate");
+app.use("/api", migrateroutes);
+
 // ── Routes ────────────────────────────────────────────────────
 app.use("/api/auth", authLimiter, authroutes);
 app.use("/api/tenant", tenantroutes);
