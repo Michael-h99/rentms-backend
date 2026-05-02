@@ -23,6 +23,56 @@ const requirePlazaOwnership = async (plazaId, landlordId) => {
   return plaza;
 };
 
+// ── GET /api/landlord/stats ──────────────────────────────────
+const getLandlordStats = asyncHandler(async (req, res) => {
+  const landlordId = Number(req.user.id);
+
+  const [[plazas]] = await db.execute(
+    `SELECT COUNT(*) AS total_plazas, COALESCE(SUM(total_units), 0) AS total_units
+     FROM plazas WHERE landlord_id = ? AND deleted_at IS NULL`,
+    [landlordId],
+  );
+
+  const [[tenants]] = await db.execute(
+    `SELECT COUNT(*) AS active_tenants
+     FROM tenancies t
+     JOIN plazas p ON p.id = t.plaza_id
+     WHERE p.landlord_id = ? AND t.status = 'active'`,
+    [landlordId],
+  );
+
+  const [[revenue]] = await db.execute(
+    `SELECT COALESCE(SUM(py.amount), 0) AS revenue_this_month
+     FROM payments py
+     JOIN tenancies t ON t.id = py.tenancy_id
+     JOIN plazas p ON p.id = t.plaza_id
+     WHERE p.landlord_id = ?
+       AND py.status = 'paid'
+       AND MONTH(py.payment_date) = MONTH(CURDATE())
+       AND YEAR(py.payment_date)  = YEAR(CURDATE())`,
+    [landlordId],
+  );
+
+  const [[maintenance]] = await db.execute(
+    `SELECT COUNT(*) AS pending_maintenance
+     FROM maintenance_requests mr
+     JOIN plazas p ON p.id = mr.plaza_id
+     WHERE p.landlord_id = ? AND mr.status IN ('pending', 'open')`,
+    [landlordId],
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      total_plazas: plazas.total_plazas,
+      total_units: plazas.total_units,
+      active_tenants: tenants.active_tenants,
+      revenue_this_month: revenue.revenue_this_month,
+      pending_maintenance: maintenance.pending_maintenance,
+    },
+  });
+});
+
 // ============================================================
 // PLAZAS
 // ============================================================
@@ -93,7 +143,6 @@ const createPlaza = asyncHandler(async (req, res) => {
   if (isNaN(units) || units <= 0)
     throw new AppError("total_units must be a positive integer", 400);
 
-  /* FIX: support optional plaza image upload */
   const image_url = req.file ? `uploads/plazas/${req.file.filename}` : null;
 
   const [result] = await db.execute(
@@ -139,14 +188,12 @@ const updatePlaza = asyncHandler(async (req, res) => {
     fields.push("total_units = ?");
     params.push(units);
   }
-
-  /* FIX: support plaza image update */
   if (req.file) {
     fields.push("image_url = ?");
     params.push(`uploads/plazas/${req.file.filename}`);
   }
-
   if (!fields.length) throw new AppError("No fields to update", 400);
+
   fields.push("updated_at = NOW()");
   params.push(Number(plazaId));
 
@@ -212,14 +259,12 @@ const getPlazaTenants = asyncHandler(async (req, res) => {
   }
 
   const WHERE = conditions.join(" AND ");
-
   const [[{ total }]] = await db.query(
     `SELECT COUNT(*) AS total FROM tenancies t WHERE ${WHERE}`,
     params,
   );
 
   const [rows] = await db.query(
-    /* FIX: added plaza_name join so frontend can display it */
     `SELECT t.id, t.tenant_id, t.unit_number, t.rent_amount,
        t.lease_start, t.lease_end, t.status, t.created_at,
        u.full_name, u.email, u.phone, u.avatar_url,
@@ -245,7 +290,6 @@ const inviteTenant = asyncHandler(async (req, res) => {
   if (!plazaId) throw new AppError("Invalid plaza ID", 400);
 
   const plaza = await requirePlazaOwnership(plazaId, landlordId);
-
   const {
     unit_number,
     rent_amount,
@@ -265,7 +309,6 @@ const inviteTenant = asyncHandler(async (req, res) => {
   if (isNaN(rentAmt) || rentAmt <= 0)
     throw new AppError("rent_amount must be a positive number", 400);
 
-  /* FIX: validate that unit_number doesn't already have an active invite code */
   const [[existingCode]] = await db.execute(
     "SELECT id FROM invite_codes WHERE plaza_id = ? AND unit_number = ? AND status = 'active' AND expires_at > NOW()",
     [Number(plazaId), unit_number],
@@ -317,11 +360,8 @@ const removeTenant = asyncHandler(async (req, res) => {
   if (!tenancyId) throw new AppError("Invalid tenancy ID", 400);
 
   const [[tenancy]] = await db.execute(
-    `SELECT t.id, t.tenant_id, t.status,
-       u.full_name AS tenant_name, p.name AS plaza_name
-     FROM tenancies t
-     JOIN plazas p ON p.id = t.plaza_id
-     JOIN users  u ON u.id = t.tenant_id
+    `SELECT t.id, t.tenant_id, t.status, u.full_name AS tenant_name, p.name AS plaza_name
+     FROM tenancies t JOIN plazas p ON p.id = t.plaza_id JOIN users u ON u.id = t.tenant_id
      WHERE t.id = ? AND p.landlord_id = ?`,
     [Number(tenancyId), landlordId],
   );
@@ -365,8 +405,6 @@ const getRentPayments = asyncHandler(async (req, res) => {
   const offset = Number((page - 1) * limit);
   const { from, to, status } = req.query;
   const plazaId = parseId(req.query.plaza_id);
-
-  /* FIX: also support tenant_id filter so tenant-details page works */
   const tenantId = parseId(req.query.tenant_id);
 
   if (from && isNaN(Date.parse(from)))
@@ -406,27 +444,17 @@ const getRentPayments = asyncHandler(async (req, res) => {
   const WHERE = conditions.join(" AND ");
 
   const [[{ total }]] = await db.query(
-    `SELECT COUNT(*) AS total
-     FROM payments pay
-     JOIN tenancies t ON t.id = pay.tenancy_id
-     JOIN plazas p    ON p.id = t.plaza_id
-     WHERE ${WHERE}`,
+    `SELECT COUNT(*) AS total FROM payments pay JOIN tenancies t ON t.id = pay.tenancy_id JOIN plazas p ON p.id = t.plaza_id WHERE ${WHERE}`,
     params,
   );
 
   const [rows] = await db.query(
-    `SELECT pay.id, pay.amount, pay.currency, pay.payment_method,
-       pay.status, pay.reference, pay.payment_date, pay.verified_at,
+    `SELECT pay.id, pay.amount, pay.currency, pay.payment_method, pay.status, pay.reference, pay.payment_date, pay.verified_at,
        t.id AS tenancy_id, t.unit_number,
        u.id AS tenant_id, u.full_name AS tenant_name, u.email AS tenant_email,
        p.id AS plaza_id, p.name AS plaza_name
-     FROM payments pay
-     JOIN tenancies t ON t.id = pay.tenancy_id
-     JOIN plazas p    ON p.id = t.plaza_id
-     JOIN users u     ON u.id = t.tenant_id
-     WHERE ${WHERE}
-     ORDER BY pay.payment_date DESC
-     LIMIT ? OFFSET ?`,
+     FROM payments pay JOIN tenancies t ON t.id = pay.tenancy_id JOIN plazas p ON p.id = t.plaza_id JOIN users u ON u.id = t.tenant_id
+     WHERE ${WHERE} ORDER BY pay.payment_date DESC LIMIT ? OFFSET ?`,
     [...params, Number(limit), Number(offset)],
   );
 
@@ -447,8 +475,6 @@ const getMaintenanceRequests = asyncHandler(async (req, res) => {
   const offset = Number((page - 1) * limit);
   const { status, priority } = req.query;
   const plazaId = parseId(req.query.plaza_id);
-
-  /* FIX: also support tenant_id filter */
   const tenantId = parseId(req.query.tenant_id);
 
   if (status && !MAINTENANCE_STATUSES.includes(status))
@@ -480,28 +506,20 @@ const getMaintenanceRequests = asyncHandler(async (req, res) => {
   const WHERE = conditions.join(" AND ");
 
   const [[{ total }]] = await db.query(
-    `SELECT COUNT(*) AS total
-     FROM maintenance_requests mr
-     JOIN plazas p ON p.id = mr.plaza_id
-     WHERE ${WHERE}`,
+    `SELECT COUNT(*) AS total FROM maintenance_requests mr JOIN plazas p ON p.id = mr.plaza_id WHERE ${WHERE}`,
     params,
   );
 
   const [rows] = await db.query(
     `SELECT mr.id, mr.title, mr.description, mr.priority, mr.status,
        mr.attachment_url, mr.resolved_at, mr.created_at, mr.updated_at,
-       p.id AS plaza_id, p.name AS plaza_name,
-       t.unit_number,
+       p.id AS plaza_id, p.name AS plaza_name, t.unit_number,
        u.id AS tenant_id, u.full_name AS tenant_name, u.email AS tenant_email
-     FROM maintenance_requests mr
-     JOIN plazas p ON p.id = mr.plaza_id
-     /* FIX: join tenancies to get unit_number */
+     FROM maintenance_requests mr JOIN plazas p ON p.id = mr.plaza_id
      LEFT JOIN tenancies t ON t.tenant_id = mr.tenant_id AND t.plaza_id = mr.plaza_id AND t.status = 'active'
      JOIN users u ON u.id = mr.tenant_id
      WHERE ${WHERE}
-     ORDER BY
-       CASE mr.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-       mr.created_at DESC
+     ORDER BY CASE mr.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, mr.created_at DESC
      LIMIT ? OFFSET ?`,
     [...params, Number(limit), Number(offset)],
   );
@@ -518,8 +536,6 @@ const updateMaintenanceStatus = asyncHandler(async (req, res) => {
   if (!requestId) throw new AppError("Invalid request ID", 400);
 
   const { status, note } = req.body;
-
-  /* FIX: also accept PATCH body with just { status } from the quick-update dropdown */
   const finalStatus = status || req.body.status;
   if (!finalStatus || !MAINTENANCE_STATUSES.includes(finalStatus))
     throw new AppError(
@@ -529,9 +545,7 @@ const updateMaintenanceStatus = asyncHandler(async (req, res) => {
 
   const [[row]] = await db.execute(
     `SELECT mr.id, mr.status AS old_status, mr.tenant_id, mr.title, p.landlord_id
-     FROM maintenance_requests mr
-     JOIN plazas p ON p.id = mr.plaza_id
-     WHERE mr.id = ?`,
+     FROM maintenance_requests mr JOIN plazas p ON p.id = mr.plaza_id WHERE mr.id = ?`,
     [Number(requestId)],
   );
 
@@ -539,17 +553,13 @@ const updateMaintenanceStatus = asyncHandler(async (req, res) => {
   if (Number(row.landlord_id) !== landlordId)
     throw new AppError("Access denied", 403);
   if (row.old_status === finalStatus)
-    return res.json({
-      success: true,
-      message: "Status already set to the requested value",
-    });
+    return res.json({ success: true, message: "Status already set" });
 
   const resolvedAt = finalStatus === "resolved" ? ", resolved_at = NOW()" : "";
   await db.execute(
     `UPDATE maintenance_requests SET status = ?, updated_at = NOW() ${resolvedAt} WHERE id = ?`,
     [finalStatus, Number(requestId)],
   );
-
   await db.execute(
     "INSERT INTO maintenance_logs (maintenance_id, changed_by, old_status, new_status, note, changed_at) VALUES (?, ?, ?, ?, ?, NOW())",
     [Number(requestId), landlordId, row.old_status, finalStatus, note || null],
@@ -592,10 +602,8 @@ const createPlazaGroup = asyncHandler(async (req, res) => {
   if (!plazaId) throw new AppError("Invalid plaza_id", 400);
   await requirePlazaOwnership(plazaId, landlordId);
 
-  /* FIX: use provided invite_code if given, otherwise generate one */
   const groupInviteCode = invite_code?.trim() || generateInviteCode();
 
-  /* FIX: check for duplicate invite_code */
   if (invite_code?.trim()) {
     const [[existing]] = await db.execute(
       "SELECT id FROM plaza_groups WHERE invite_code = ?",
@@ -641,28 +649,21 @@ const getLandlordGroups = asyncHandler(async (req, res) => {
   }
 
   const [rows] = await db.execute(
-    /* FIX: count members from group_members table (people who joined),
-       not from group_messages (people who sent messages) */
-    `SELECT
-       pg.id, pg.name, pg.invite_code, pg.created_at,
+    `SELECT pg.id, pg.name, pg.invite_code, pg.created_at,
        p.id AS plaza_id, p.name AS plaza_name,
        COUNT(DISTINCT mem.user_id) AS member_count
      FROM plaza_groups pg
      JOIN plazas p ON p.id = pg.plaza_id
      LEFT JOIN group_members mem ON mem.group_id = pg.id
      WHERE ${conditions.join(" AND ")}
-     GROUP BY pg.id
-     ORDER BY pg.created_at DESC`,
+     GROUP BY pg.id ORDER BY pg.created_at DESC`,
     params,
   );
 
-  /* Get last message for each group separately to avoid subquery issues */
   for (const row of rows) {
     try {
       const [[lastMsg]] = await db.execute(
-        `SELECT content AS last_message, created_at AS last_message_at
-         FROM group_messages WHERE group_id = ?
-         ORDER BY created_at DESC LIMIT 1`,
+        `SELECT content AS last_message, created_at AS last_message_at FROM group_messages WHERE group_id = ? ORDER BY created_at DESC LIMIT 1`,
         [row.id],
       );
       row.last_message = lastMsg?.last_message || null;
@@ -679,19 +680,13 @@ const getLandlordGroups = asyncHandler(async (req, res) => {
 const getGroupMessages = asyncHandler(async (req, res) => {
   const landlordId = parseInt(req.user.id, 10);
   const groupId = parseInt(req.params.id, 10);
-
   if (!groupId || groupId <= 0) throw new AppError("Invalid group ID", 400);
   if (!landlordId || landlordId <= 0) throw new AppError("Invalid user", 401);
 
-  /* FIX: use interpolated integers directly — avoids ALL parameterised
-     query type issues with Aiven MySQL strict mode.
-     Safe because both values are parseInt'd to integers above. */
   const [[group]] = await db.execute(
     `SELECT pg.id, pg.name, pg.invite_code, p.id AS plaza_id
-     FROM plaza_groups pg
-     JOIN plazas p ON p.id = pg.plaza_id
-     WHERE pg.id = ${groupId} AND p.landlord_id = ${landlordId}
-     LIMIT 1`,
+     FROM plaza_groups pg JOIN plazas p ON p.id = pg.plaza_id
+     WHERE pg.id = ${groupId} AND p.landlord_id = ${landlordId} LIMIT 1`,
   );
   if (!group) throw new AppError("Group not found or access denied", 403);
 
@@ -699,26 +694,18 @@ const getGroupMessages = asyncHandler(async (req, res) => {
   const limit = Math.min(100, parseInt(req.query.limit, 10) || DEFAULT_LIMIT);
   const offset = (page - 1) * limit;
 
-  /* FIX: use interpolated integers for all numeric values */
   const [[{ total }]] = await db.execute(
     `SELECT COUNT(*) AS total FROM group_messages WHERE group_id = ${groupId}`,
   );
 
   const [messages] = await db.execute(
-    `SELECT
-       gm.id, gm.sender_id,
-       gm.content,
-       gm.content AS message,
+    `SELECT gm.id, gm.sender_id, gm.content, gm.content AS message,
        gm.file_url, gm.file_type, gm.created_at,
        COALESCE(u.full_name, u.username) AS sender_name,
-       u.email       AS sender_email,
-       u.avatar_url  AS sender_avatar,
-       u.role        AS sender_role
-     FROM group_messages gm
-     JOIN users u ON u.id = gm.sender_id
+       u.email AS sender_email, u.avatar_url AS sender_avatar, u.role AS sender_role
+     FROM group_messages gm JOIN users u ON u.id = gm.sender_id
      WHERE gm.group_id = ${groupId}
-     ORDER BY gm.created_at ASC
-     LIMIT ${limit} OFFSET ${offset}`,
+     ORDER BY gm.created_at ASC LIMIT ${limit} OFFSET ${offset}`,
   );
 
   return res.json({
@@ -732,26 +719,18 @@ const getGroupMembers = asyncHandler(async (req, res) => {
   const groupId = parseInt(req.params.id, 10);
   if (!groupId) throw new AppError("Invalid group ID", 400);
 
-  /* Verify ownership */
   const [[group]] = await db.execute(
     `SELECT pg.id, pg.name, p.id AS plaza_id, p.name AS plaza_name
-     FROM plaza_groups pg
-     JOIN plazas p ON p.id = pg.plaza_id
+     FROM plaza_groups pg JOIN plazas p ON p.id = pg.plaza_id
      WHERE pg.id = ${groupId} AND p.landlord_id = ${landlordId} LIMIT 1`,
   );
   if (!group) throw new AppError("Group not found or access denied", 403);
 
-  /* Get users who are in group_members table */
   const [members] = await db.execute(
-    `SELECT
-       gm.user_id, gm.joined_at,
-       u.full_name, u.email, u.avatar_url,
-       t.unit_number
-     FROM group_members gm
-     JOIN users u ON u.id = gm.user_id
+    `SELECT gm.user_id, gm.joined_at, u.full_name, u.email, u.avatar_url, t.unit_number
+     FROM group_members gm JOIN users u ON u.id = gm.user_id
      LEFT JOIN tenancies t ON t.tenant_id = gm.user_id AND t.plaza_id = ${group.plaza_id} AND t.status = 'active'
-     WHERE gm.group_id = ${groupId}
-     ORDER BY gm.joined_at ASC`,
+     WHERE gm.group_id = ${groupId} ORDER BY gm.joined_at ASC`,
   );
 
   const data = members.map((m) => ({
@@ -772,17 +751,12 @@ const sendGroupMessageLandlord = asyncHandler(async (req, res) => {
   const groupId = parseId(req.params.id);
   if (!groupId) throw new AppError("Invalid group ID", 400);
 
-  /* FIX: accept both 'content' and 'message' field names from frontend */
   const content = (req.body.content || req.body.message || "").trim();
-
   if (!content && !req.file)
     throw new AppError("A message or file attachment is required", 400);
 
   const [[group]] = await db.execute(
-    `SELECT pg.id, pg.name, p.id AS plaza_id
-     FROM plaza_groups pg
-     JOIN plazas p ON p.id = pg.plaza_id
-     WHERE pg.id = ? AND p.landlord_id = ?`,
+    `SELECT pg.id, pg.name, p.id AS plaza_id FROM plaza_groups pg JOIN plazas p ON p.id = pg.plaza_id WHERE pg.id = ? AND p.landlord_id = ?`,
     [Number(groupId), landlordId],
   );
   if (!group) throw new AppError("Group not found or access denied", 403);
@@ -815,7 +789,6 @@ const sendGroupMessageLandlord = asyncHandler(async (req, res) => {
       created_at: new Date().toISOString(),
     });
 
-  /* Notify all active tenants in this plaza */
   const [tenants] = await db.execute(
     "SELECT DISTINCT t.tenant_id AS user_id FROM tenancies t WHERE t.plaza_id = ? AND t.status = 'active'",
     [Number(group.plaza_id)],
@@ -838,11 +811,13 @@ const sendGroupMessageLandlord = asyncHandler(async (req, res) => {
     { ip: req.ip },
   );
 
-  return res.status(201).json({
-    success: true,
-    message: "Message sent successfully",
-    message_id: result.insertId,
-  });
+  return res
+    .status(201)
+    .json({
+      success: true,
+      message: "Message sent successfully",
+      message_id: result.insertId,
+    });
 });
 
 const uploadPlazaImage = asyncHandler(async (req, res) => {
@@ -851,18 +826,15 @@ const uploadPlazaImage = asyncHandler(async (req, res) => {
   if (!plazaId) throw new AppError("Invalid plaza ID", 400);
 
   await requirePlazaOwnership(plazaId, landlordId);
-
   if (!req.file) throw new AppError("No image file provided", 400);
 
   const imageUrl = `uploads/plazas/${req.file.filename}`;
-
   await db.execute(
     `UPDATE plazas SET image_url = ?, updated_at = NOW() WHERE id = ${plazaId}`,
     [imageUrl],
   );
 
   const fullUrl = `https://rentms-backend-5.onrender.com/${imageUrl}`;
-
   return res.json({
     success: true,
     message: "Plaza image uploaded successfully",
@@ -871,6 +843,7 @@ const uploadPlazaImage = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  getLandlordStats,
   getLandlordPlazas,
   getPlazaById,
   createPlaza,
