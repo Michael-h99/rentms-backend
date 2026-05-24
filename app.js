@@ -175,6 +175,11 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   app.set("webpush", null);
 }
 
+// Health check endpoint for UptimeRobot
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
 // ── Routes ────────────────────────────────────────────────────
 app.use("/api/auth", authLimiter, authroutes);
 app.use("/api/tenant", tenantroutes);
