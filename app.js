@@ -11,11 +11,10 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const chalk = require("chalk");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const webpush = require("web-push");
 
 const db = require("./utils/db");
-
 const {
   authLimiter,
   paymentLimiter,
@@ -39,14 +38,16 @@ const emailroutes = require("./routes/emailroutes");
 const pushroutes = require("./routes/pushroutes");
 const invitecoderoutes = require("./routes/invitecoderoutes");
 
-const REQUIRED_ENV = ["JWT_SECRET", "DB_HOST", "DB_USER", "DB_NAME"];
+const REQUIRED_ENV = [
+  "JWT_SECRET",
+  "DB_HOST",
+  "DB_USER",
+  "DB_NAME",
+  "RESEND_API_KEY",
+];
 const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
 if (missingEnv.length) {
-  console.error(
-    chalk.red(
-      `❌ Missing required env vars: ${missingEnv.join(", ")}\n   Check your .env file`,
-    ),
-  );
+  console.error(chalk.red(`❌ Missing env vars: ${missingEnv.join(", ")}`));
   process.exit(1);
 }
 
@@ -61,7 +62,6 @@ if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(compression());
-
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -71,12 +71,7 @@ app.use(
 
 const ALLOWED_ORIGINS = process.env.FRONTEND_URL
   ? [process.env.FRONTEND_URL]
-  : [
-      "http://localhost:5500",
-      "http://127.0.0.1:5500",
-      "http://localhost:3000",
-      "http://127.0.0.1:3000",
-    ];
+  : ["http://localhost:5500", "http://127.0.0.1:5500", "http://localhost:3000"];
 
 app.use(
   cors({
@@ -86,9 +81,7 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
-
 app.use("/api", generalLimiter);
-
 app.use(
   "/uploads",
   (req, res, next) => {
@@ -103,7 +96,6 @@ const logStream = fs.createWriteStream(
   path.join(__dirname, "logs", "server.log"),
   { flags: "a" },
 );
-
 morgan.token("statusColor", (req, res) => {
   const s = res.statusCode;
   if (s >= 500) return chalk.red(String(s));
@@ -111,7 +103,6 @@ morgan.token("statusColor", (req, res) => {
   if (s >= 300) return chalk.cyan(String(s));
   return chalk.green(String(s));
 });
-
 app.use(
   morgan(":method :url :statusColor :res[content-length] - :response-time ms"),
 );
@@ -124,7 +115,6 @@ const io = new Server(server, {
     credentials: true,
   },
 });
-
 app.set("io", io);
 
 io.on("connection", (socket) => {
@@ -133,36 +123,29 @@ io.on("connection", (socket) => {
     const uid = parseInt(userId, 10);
     if (!uid || uid <= 0) return;
     socket.join(`user_${uid}`);
-    console.log(chalk.blue(`✅ User ${uid} joined room user_${uid}`));
   });
-  socket.on("join_admin", () => {
-    socket.join("admin_room");
-  });
+  socket.on("join_admin", () => socket.join("admin_room"));
   socket.on("join_group", (groupId) => {
     const gid = parseInt(groupId, 10);
     if (!gid || gid <= 0) return;
     socket.join(`group_${gid}`);
   });
-  socket.on("disconnect", (reason) => {
+  socket.on("disconnect", (reason) =>
     console.log(
       chalk.gray("❌ Socket disconnected:", socket.id, `(${reason})`),
-    );
-  });
+    ),
+  );
 });
 
-const transporter = nodemailer.createTransport({
-  service: process.env.EMAIL_SERVICE || "gmail",
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-});
-transporter.verify((err) => {
-  if (err) console.error(chalk.red("❌ Email transporter error:"), err.message);
-  else console.log(chalk.green("📩 Email transporter ready"));
-});
-app.set("transporter", transporter);
+// ── Resend Email Client ───────────────────────────────────────
+const resend = new Resend(process.env.RESEND_API_KEY);
+app.set("resend", resend);
+console.log(chalk.green("📩 Resend email client ready"));
 
+// ── Web Push ──────────────────────────────────────────────────
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   webpush.setVapidDetails(
-    `mailto:${process.env.EMAIL_USER || "admin@rentms.com"}`,
+    `mailto:${process.env.EMAIL_FROM || "admin@rentms.com"}`,
     process.env.VAPID_PUBLIC_KEY,
     process.env.VAPID_PRIVATE_KEY,
   );
@@ -175,12 +158,18 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   app.set("webpush", null);
 }
 
-// Health check endpoint for UptimeRobot
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
-});
+// Health check
+app.get("/health", (req, res) =>
+  res
+    .status(200)
+    .json({
+      status: "OK",
+      uptime: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+    }),
+);
 
-// ── Routes ────────────────────────────────────────────────────
+// Routes
 app.use("/api/auth", authLimiter, authroutes);
 app.use("/api/tenant", tenantroutes);
 app.use("/api/landlord", landlordroutes);
@@ -194,22 +183,12 @@ app.use("/api/email", emailroutes);
 app.use("/api/push", pushroutes);
 app.use("/api/invite-codes", invitecoderoutes);
 
-app.get("/health", (req, res) =>
-  res.status(200).json({
-    status: "OK",
-    uptime: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString(),
-  }),
-);
-
 app.get("/", (req, res) =>
   res.json({
     message: "🚀 Rent Management System API is running",
     version: "2.0.0",
-    environment: process.env.NODE_ENV || "Production",
   }),
 );
-
 app.use(notFoundHandler);
 app.use(errorHandler);
 
@@ -224,12 +203,7 @@ const PORT = parseInt(process.env.PORT, 10) || 5000;
       console.log(
         chalk.greenBright(`✅ Server running → http://localhost:${PORT}`),
       );
-      console.log(
-        chalk.cyan(`🌍 Environment : ${process.env.NODE_ENV || "production"}`),
-      );
-      console.log(chalk.cyan(`🔗 Frontend    : ${ALLOWED_ORIGINS[0]}`));
-      console.log(chalk.cyan(`📋 Logs        : logs/server.log`));
-      console.log(chalk.cyan(`📁 Uploads     : /uploads`));
+      console.log(chalk.cyan(`🔗 Frontend : ${ALLOWED_ORIGINS[0]}`));
       console.log("─────────────────────────────────────────────────");
     });
   } catch (err) {
@@ -239,24 +213,20 @@ const PORT = parseInt(process.env.PORT, 10) || 5000;
 })();
 
 const gracefulShutdown = (signal) => {
-  console.log(
-    chalk.yellow(`\n⚠️  ${signal} received — shutting down gracefully...`),
-  );
+  console.log(chalk.yellow(`\n⚠️  ${signal} received — shutting down...`));
   server.close(() => {
     console.log(chalk.green("✅ Server closed"));
     process.exit(0);
   });
   setTimeout(() => process.exit(1), 10_000);
 };
-
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-process.on("unhandledRejection", (reason) => {
-  console.error(chalk.red("🔥 Unhandled Promise Rejection:"), reason);
-});
+process.on("unhandledRejection", (reason) =>
+  console.error(chalk.red("🔥 Unhandled Rejection:"), reason),
+);
 process.on("uncaughtException", (error) => {
   console.error(chalk.red("💥 Uncaught Exception:"), error.message);
-  console.error(error.stack);
   process.exit(1);
 });
 
