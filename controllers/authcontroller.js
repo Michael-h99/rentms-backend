@@ -10,7 +10,7 @@ const NotificationService = require("../services/notificationservice");
 const {
   sendWelcomeEmail,
   sendPasswordResetEmail,
-} = require("../services/emailService");
+} = require("../services/emailservice");
 
 const ACCESS_TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || "15m";
 const REFRESH_TOKEN_EXPIRY = process.env.JWT_REFRESH_EXPIRES || "7d";
