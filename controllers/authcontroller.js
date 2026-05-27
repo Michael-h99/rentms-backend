@@ -2,7 +2,7 @@
 const crypto = require("crypto");
 const db = require("../utils/db");
 const User = require("../models/userModel");
-const InviteCode = require("../models/inviteCodeModel");
+const InviteCode = require("../models/invitecodeModel");
 const jwt = require("jsonwebtoken");
 const { AppError, asyncHandler } = require("../utils/errorhandler");
 const { logActivity } = require("../utils/activitylogger");
