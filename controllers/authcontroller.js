@@ -1,35 +1,21 @@
 // controllers/authcontroller.js
-// ============================================================
-// Handles: register (with invite code), login, logout, refresh,
-//          forgot/reset password, change password,
-//          get current user, update profile, upload avatar.
-//
-// Schema (rentms_full_schema.sql — Section 1):
-//   users.full_name         : VARCHAR(150) NULL
-//   users.avatar_url        : VARCHAR(500) NULL
-//   users.refresh_token     : VARCHAR(600) NULL
-//   users.reset_token       : VARCHAR(255) NULL
-//   users.reset_token_expiry: DATETIME NULL
-//   users.status            : ENUM('active','suspended','blacklisted')
-//
-// Import path from routes:
-//   require("../controllers/authcontroller")
-// ============================================================
-
 const crypto = require("crypto");
 const db = require("../utils/db");
 const User = require("../models/userModel");
-const InviteCode = require("../models/invitecodeModel");
+const InviteCode = require("../models/inviteCodeModel");
 const jwt = require("jsonwebtoken");
 const { AppError, asyncHandler } = require("../utils/errorhandler");
 const { logActivity } = require("../utils/activitylogger");
 const NotificationService = require("../services/notificationservice");
+const {
+  sendWelcomeEmail,
+  sendPasswordResetEmail,
+} = require("../services/emailService");
 
 const ACCESS_TOKEN_EXPIRY = process.env.JWT_EXPIRES_IN || "15m";
 const REFRESH_TOKEN_EXPIRY = process.env.JWT_REFRESH_EXPIRES || "7d";
-const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
+const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000;
 
-// ── Token helpers ─────────────────────────────────────────────
 const signAccess = (payload) =>
   jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRY });
 const signRefresh = (payload) =>
@@ -37,16 +23,10 @@ const signRefresh = (payload) =>
     expiresIn: REFRESH_TOKEN_EXPIRY,
   });
 
-// ── Password strength ─────────────────────────────────────────
-// Min 8 chars, at least one letter and one number
 const isStrongPassword = (p) => /^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(p);
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/register
-// Landlord: username, email, password, role = "landlord"
-// Tenant:   same fields + invite_code (REQUIRED)
-//           → validates invite, creates user, creates tenancy,
-//             marks invite used — all in one transaction.
 // ═══════════════════════════════════════════════════════════════
 const register = asyncHandler(async (req, res) => {
   const { username, email, phone, full_name, password, role, invite_code } =
@@ -71,18 +51,15 @@ const register = asyncHandler(async (req, res) => {
     );
   }
 
-  // Validate invite code early (fail fast before writing anything)
   let ic = null;
   if (role === "tenant") {
     ic = await InviteCode.validate(invite_code.trim().toUpperCase());
-    // InviteCode.validate throws AppError if invalid/expired/used
   }
 
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
 
-    // Duplicate checks
     const [[emailExists]] = await conn.execute(
       "SELECT id FROM users WHERE email = ? LIMIT 1",
       [email.trim().toLowerCase()],
@@ -97,7 +74,6 @@ const register = asyncHandler(async (req, res) => {
     if (usernameExists)
       throw new AppError("This username is already taken", 409);
 
-    // Create user
     const userId = await User.create({
       username: username.trim(),
       email: email.trim().toLowerCase(),
@@ -107,7 +83,6 @@ const register = asyncHandler(async (req, res) => {
       role,
     });
 
-    // Tenant invite flow
     let tenancyInfo = null;
     if (role === "tenant" && ic) {
       await conn.execute(
@@ -146,20 +121,35 @@ const register = asyncHandler(async (req, res) => {
         lease_end: ic.lease_end,
       };
 
-      // Notify landlord — non-fatal, fire outside transaction
       await conn.commit();
       conn.release();
 
-      await NotificationService.create({
-        recipientId: ic.landlord_id,
-        senderId: userId,
-        type: "new_tenant",
-        message: `${username.trim()} joined ${ic.plaza_name}, Unit ${ic.unit_number} via invite code.`,
-        io: null, // no req.app here — landlord sees it on next load
-      });
+      // Notify landlord
+      try {
+        await NotificationService.create({
+          recipientId: ic.landlord_id,
+          senderId: userId,
+          type: "new_tenant",
+          message: `${username.trim()} joined ${ic.plaza_name}, Unit ${ic.unit_number} via invite code.`,
+          io: null,
+        });
+      } catch (notifErr) {
+        console.warn(
+          "[register] landlord notification failed:",
+          notifErr.message,
+        );
+      }
     } else {
       await conn.commit();
       conn.release();
+    }
+
+    // ── Send welcome email (non-fatal) ────────────────────────
+    try {
+      await sendWelcomeEmail({ app: req.app, userId });
+      console.log(`📩 Welcome email sent to ${email}`);
+    } catch (emailErr) {
+      console.warn("[register] welcome email failed:", emailErr.message);
     }
 
     await logActivity(
@@ -194,7 +184,6 @@ const register = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/login
-// Body: { email, password }
 // ═══════════════════════════════════════════════════════════════
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
@@ -202,7 +191,7 @@ const login = asyncHandler(async (req, res) => {
     throw new AppError("Email and password are required", 400);
   }
 
-  const user = await User.findByEmail(email.trim().toLowerCase(), true); // true = include password_hash
+  const user = await User.findByEmail(email.trim().toLowerCase(), true);
   if (!user || !(await user.verifyPassword(password))) {
     throw new AppError("Invalid email or password", 401);
   }
@@ -234,8 +223,6 @@ const login = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/refresh
-// Exchange a valid refresh token for a new access + refresh pair.
-// Body: { refresh_token }
 // ═══════════════════════════════════════════════════════════════
 const refreshToken = asyncHandler(async (req, res) => {
   const { refresh_token } = req.body;
@@ -280,7 +267,6 @@ const refreshToken = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/logout
-// Clears the stored refresh token — invalidates the session.
 // ═══════════════════════════════════════════════════════════════
 const logout = asyncHandler(async (req, res) => {
   await db.execute(
@@ -293,7 +279,6 @@ const logout = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/auth/me
-// Returns the authenticated user's safe profile.
 // ═══════════════════════════════════════════════════════════════
 const getCurrentUser = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.id);
@@ -303,8 +288,6 @@ const getCurrentUser = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // PATCH /api/auth/me
-// Update profile fields — username, full_name, phone, address.
-// Body: { username?, full_name?, phone?, address? }
 // ═══════════════════════════════════════════════════════════════
 const updateProfile = asyncHandler(async (req, res) => {
   const userId = req.user.id;
@@ -314,7 +297,6 @@ const updateProfile = asyncHandler(async (req, res) => {
   const params = [];
 
   if (username?.trim()) {
-    // Unique check — exclude self
     const [[taken]] = await db.execute(
       "SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1",
       [username.trim(), userId],
@@ -360,8 +342,6 @@ const updateProfile = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/avatar
-// Upload / replace profile avatar.
-// File: single image, handled by uploadMiddleware.avatar.single("avatar")
 // ═══════════════════════════════════════════════════════════════
 const uploadAvatar = asyncHandler(async (req, res) => {
   if (!req.file) throw new AppError("An image file is required", 400);
@@ -385,9 +365,7 @@ const uploadAvatar = asyncHandler(async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// POST /api/auth/forgot-password
-// Always returns 200 — prevents email enumeration.
-// Body: { email }
+// POST /api/auth/forgot-password  ← NOW USES RESEND
 // ═══════════════════════════════════════════════════════════════
 const SAFE_RESET_RESPONSE = {
   success: true,
@@ -399,7 +377,7 @@ const forgotPassword = asyncHandler(async (req, res) => {
   if (!email?.trim()) throw new AppError("Email is required", 400);
 
   const user = await User.findByEmail(email.trim().toLowerCase());
-  if (!user) return res.json(SAFE_RESET_RESPONSE); // don't reveal if email exists
+  if (!user) return res.json(SAFE_RESET_RESPONSE);
 
   const token = crypto.randomBytes(32).toString("hex");
   const expiry = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
@@ -409,23 +387,18 @@ const forgotPassword = asyncHandler(async (req, res) => {
     [token, expiry, user.id],
   );
 
-  const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password.html?token=${token}`;
-  const transporter = req.app.get("transporter");
-  if (transporter) {
-    try {
-      await transporter.sendMail({
-        from: `"RentMS Ghana" <${process.env.EMAIL_USER}>`,
-        to: email.trim().toLowerCase(),
-        subject: "RentMS — Password Reset Request",
-        html: `
-          <p>You requested a password reset for your RentMS account.</p>
-          <p><a href="${resetUrl}" style="color:#1e40af">Click here to reset your password</a></p>
-          <p>This link expires in 1 hour. If you didn't request this, ignore this email.</p>
-        `,
-      });
-    } catch (emailErr) {
-      console.warn("[forgotPassword] email send failed:", emailErr.message);
-    }
+  // ── Send reset email via Resend ───────────────────────────
+  try {
+    await sendPasswordResetEmail({
+      app: req.app,
+      userId: user.id,
+      email: user.email,
+      fullName: user.full_name || user.username,
+      resetToken: token,
+    });
+    console.log(`📩 Password reset email sent to ${user.email}`);
+  } catch (emailErr) {
+    console.warn("[forgotPassword] email failed:", emailErr.message);
   }
 
   await logActivity(
@@ -439,7 +412,6 @@ const forgotPassword = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/reset-password
-// Body: { token, new_password }
 // ═══════════════════════════════════════════════════════════════
 const resetPassword = asyncHandler(async (req, res) => {
   const { token, new_password } = req.body;
@@ -485,7 +457,6 @@ const resetPassword = asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // POST /api/auth/change-password
-// Body: { current_password, new_password }
 // ═══════════════════════════════════════════════════════════════
 const changePassword = asyncHandler(async (req, res) => {
   const { current_password, new_password } = req.body;
@@ -505,7 +476,7 @@ const changePassword = asyncHandler(async (req, res) => {
     );
   }
 
-  const user = await User.findById(req.user.id, true); // true = include password_hash
+  const user = await User.findById(req.user.id, true);
   if (!user) throw new AppError("User not found", 404);
   if (!(await user.verifyPassword(current_password))) {
     throw new AppError("Current password is incorrect", 401);
@@ -513,7 +484,6 @@ const changePassword = asyncHandler(async (req, res) => {
 
   await User.updatePassword(req.user.id, new_password);
 
-  // Invalidate all existing refresh tokens — forces re-login on other devices
   await db.execute(
     "UPDATE users SET refresh_token = NULL, updated_at = NOW() WHERE id = ?",
     [req.user.id],
