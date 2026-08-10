@@ -44,6 +44,8 @@ const REQUIRED_ENV = [
   "DB_USER",
   "DB_NAME",
   "RESEND_API_KEY",
+  "PAYSTACK_SECRET_KEY",
+  "PAYSTACK_PUBLIC_KEY",
 ];
 const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
 if (missingEnv.length) {
@@ -59,7 +61,18 @@ app.set("trust proxy", 1);
 const logsDir = path.join(__dirname, "logs");
 if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
 
-app.use(express.json({ limit: "10kb" }));
+app.use(
+  express.json({
+    limit: "10kb",
+    // Paystack webhook signature verification (HMAC-SHA512) needs the
+    // exact raw bytes of the request body — capture them here so
+    // paymentcontroller.js can use req.rawBody. Every other route
+    // still gets the normal parsed req.body as before.
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true, limit: "10kb" }));
 app.use(compression());
 app.use(
@@ -160,13 +173,11 @@ if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
 
 // Health check
 app.get("/health", (req, res) =>
-  res
-    .status(200)
-    .json({
-      status: "OK",
-      uptime: Math.floor(process.uptime()),
-      timestamp: new Date().toISOString(),
-    }),
+  res.status(200).json({
+    status: "OK",
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+  }),
 );
 
 // Routes

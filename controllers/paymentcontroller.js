@@ -14,10 +14,12 @@
 const db = require("../utils/db");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const PDFDocument = require("pdfkit");
 const { AppError, asyncHandler } = require("../utils/errorhandler");
 const { logActivity } = require("../utils/activitylogger");
 const NotificationService = require("../services/notificationservice");
+const PaystackService = require("../services/paystackservice");
 const {
   generateReference,
   generateReceiptNumber,
@@ -30,6 +32,27 @@ const { formatDate, formatGhanaDateTime } = require("../utils/formatdate");
 const VALID_PAYMENT_METHODS = ["card", "momo", "bank"];
 const VALID_PAYMENT_STATUSES = ["paid", "pending", "failed"];
 const DEFAULT_LIMIT = 20;
+
+// ── Paystack → schema mapping ────────────────────────────────
+// Paystack's transaction `channel` doesn't line up 1:1 with our
+// payment_method ENUM('card','momo','bank') — map the closest fit.
+const mapPaystackChannelToPaymentMethod = (channel) => {
+  if (channel === "card") return "card";
+  if (channel === "mobile_money") return "momo";
+  return "bank"; // bank, bank_transfer, ussd, qr, eft
+};
+
+// Paystack returns the mobile network under authorization.bank for
+// momo channel transactions in Ghana — normalise to our momo_provider
+// ENUM('MTN','Vodafone','AirtelTigo'). Unrecognised → null (nullable field).
+const PAYSTACK_MOMO_NETWORK_MAP = {
+  mtn: "MTN",
+  vodafone: "Vodafone",
+  telecel: "Vodafone", // Vodafone GH rebranded to Telecel — schema still uses 'Vodafone'
+  airteltigo: "AirtelTigo",
+  airtel: "AirtelTigo",
+  tigo: "AirtelTigo",
+};
 
 const parseId = (v) => {
   const n = parseInt(v, 10);
@@ -659,6 +682,304 @@ const updatePaymentStatus = asyncHandler(async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// TENANT — PAYSTACK: INITIALIZE
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/payments/initialize
+// Tenant starts a real Paystack transaction. The backend — not the
+// client — is the source of truth for the amount and reference.
+// Body: { tenancy_id, amount }
+// Returns Paystack's access_code so the frontend can open the popup.
+const initializePaystackPayment = asyncHandler(async (req, res) => {
+  const tenantId = req.user.id;
+  const { tenancy_id, amount } = req.body;
+
+  if (!tenancy_id || !amount) {
+    throw new AppError("tenancy_id and amount are required", 400);
+  }
+  const tenancyId = parseId(tenancy_id);
+  if (!tenancyId) throw new AppError("Invalid tenancy_id", 400);
+
+  const parsedAmount = parseFloat(amount);
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    throw new AppError("Amount must be a positive number", 400);
+  }
+
+  const [[tenancy]] = await db.execute(
+    `SELECT t.id, t.status,
+            p.name AS plaza_name,
+            u.email AS tenant_email
+     FROM tenancies t
+     JOIN plazas p ON p.id = t.plaza_id
+     JOIN users  u ON u.id = t.tenant_id
+     WHERE t.id = ? AND t.tenant_id = ?`,
+    [tenancyId, tenantId],
+  );
+  if (!tenancy) throw new AppError("Tenancy not found or access denied", 403);
+  if (tenancy.status !== "active")
+    throw new AppError("Cannot make payment on an inactive tenancy", 400);
+  if (!tenancy.tenant_email)
+    throw new AppError(
+      "Your account has no email on file — contact support",
+      400,
+    );
+
+  const reference = generateReference();
+
+  // Call Paystack BEFORE writing anything to our DB — if this fails,
+  // nothing is left behind to clean up.
+  const paystackData = await PaystackService.initializeTransaction({
+    email: tenancy.tenant_email,
+    amount: parsedAmount,
+    reference,
+    callback_url: process.env.FRONTEND_URL
+      ? `${process.env.FRONTEND_URL}/Tenants/payments.html`
+      : undefined,
+    metadata: {
+      tenancy_id: tenancyId,
+      tenant_id: tenantId,
+      plaza_name: tenancy.plaza_name,
+    },
+  });
+
+  // Pending row to reconcile the popup callback / webhook against.
+  // payment_method is a placeholder — overwritten with the real
+  // channel once the transaction is verified.
+  await db.execute(
+    `INSERT INTO payments
+       (tenancy_id, amount, currency, payment_method, status, reference, payment_date, created_at)
+     VALUES (?, ?, 'GHS', 'card', 'pending', ?, NOW(), NOW())`,
+    [tenancyId, parsedAmount, reference],
+  );
+
+  return res.status(200).json({
+    success: true,
+    reference,
+    access_code: paystackData.access_code,
+    authorization_url: paystackData.authorization_url,
+    public_key: process.env.PAYSTACK_PUBLIC_KEY,
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PAYSTACK — SHARED RECONCILIATION
+// ═══════════════════════════════════════════════════════════════
+
+// Called by both the tenant-facing verify endpoint and the webhook.
+// Always re-checks with Paystack directly — never trusts the caller.
+// Idempotent: if the payment is already 'paid', it's a no-op, so a
+// webhook and a manual verify racing each other can't double-process.
+const finalizePaystackPayment = async (reference, { io } = {}) => {
+  const [[payment]] = await db.execute(
+    `SELECT py.id, py.status, py.amount, py.tenancy_id,
+            t.tenant_id, t.unit_number,
+            p.name AS plaza_name, p.location, p.landlord_id,
+            u.full_name AS tenant_name
+     FROM payments py
+     JOIN tenancies t ON t.id = py.tenancy_id
+     JOIN plazas    p ON p.id = t.plaza_id
+     JOIN users     u ON u.id = t.tenant_id
+     WHERE py.reference = ?`,
+    [reference],
+  );
+  if (!payment) throw new AppError("Payment not found for this reference", 404);
+
+  if (payment.status === "paid") {
+    return { alreadyProcessed: true, status: "paid", paymentId: payment.id };
+  }
+
+  const tx = await PaystackService.verifyTransaction(reference);
+
+  if (tx.status !== "success") {
+    await db.execute(
+      `UPDATE payments SET status = 'failed', updated_at = NOW() WHERE id = ?`,
+      [payment.id],
+    );
+    return {
+      alreadyProcessed: false,
+      status: "failed",
+      paymentId: payment.id,
+    };
+  }
+
+  const paidAmount = tx.amount / 100; // pesewas → GHS
+  if (Math.abs(paidAmount - parseFloat(payment.amount)) > 0.01) {
+    console.warn(
+      `⚠️  Paystack amount mismatch on ${reference}: expected GHS ${payment.amount}, got GHS ${paidAmount}`,
+    );
+  }
+
+  const paymentMethod = mapPaystackChannelToPaymentMethod(tx.channel);
+  const momoProvider =
+    paymentMethod === "momo"
+      ? PAYSTACK_MOMO_NETWORK_MAP[
+          (tx.authorization?.bank || "").toLowerCase()
+        ] || null
+      : null;
+  const cardLast4 =
+    paymentMethod === "card" ? tx.authorization?.last4 || null : null;
+  const cardBrand =
+    paymentMethod === "card" ? tx.authorization?.card_type || null : null;
+  const transactionId = String(tx.id);
+  const receiptNumber = generateReceiptNumber();
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    await conn.execute(
+      `UPDATE payments
+       SET status = 'paid', payment_method = ?, momo_provider = ?,
+           card_last4 = ?, card_brand = ?, transaction_id = ?,
+           verified_at = NOW(), updated_at = NOW()
+       WHERE id = ?`,
+      [
+        paymentMethod,
+        momoProvider,
+        cardLast4,
+        cardBrand,
+        transactionId,
+        payment.id,
+      ],
+    );
+
+    let pdfPath = null;
+    try {
+      pdfPath = await generatePDFReceipt({
+        receiptNumber,
+        reference,
+        tenantName: payment.tenant_name,
+        plazaName: payment.plaza_name,
+        location: payment.location,
+        unitNumber: payment.unit_number,
+        amount: paidAmount,
+        paymentMethod,
+        paymentDate: new Date(),
+      });
+    } catch (pdfErr) {
+      console.warn("⚠️  PDF generation failed (non-fatal):", pdfErr.message);
+    }
+
+    await conn.execute(
+      `INSERT INTO receipts
+         (payment_id, receipt_number, receipt_type, file_url, issued_at)
+       VALUES (?, ?, 'rent', ?, NOW())`,
+      [payment.id, receiptNumber, pdfPath || null],
+    );
+
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+
+  // Notify landlord — non-fatal
+  await NotificationService.create({
+    recipientId: payment.landlord_id,
+    senderId: payment.tenant_id,
+    type: "payment_received",
+    message: `GHS ${paidAmount.toLocaleString("en-GH", { minimumFractionDigits: 2 })} payment received from ${payment.tenant_name} — ${payment.plaza_name}`,
+    referenceId: payment.id,
+    io,
+  });
+
+  await logActivity(
+    payment.tenant_id,
+    "payment_created",
+    `Payment of GHS ${paidAmount} verified via Paystack for tenancy ${payment.tenancy_id} (ref: ${reference})`,
+  );
+
+  return {
+    alreadyProcessed: false,
+    status: "paid",
+    paymentId: payment.id,
+    receiptNumber,
+  };
+};
+
+// ═══════════════════════════════════════════════════════════════
+// TENANT — PAYSTACK: VERIFY (called right after the popup closes)
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/payments/verify/:reference
+const verifyPaystackPayment = asyncHandler(async (req, res) => {
+  const { reference } = req.params;
+  if (!reference) throw new AppError("Reference is required", 400);
+
+  const result = await finalizePaystackPayment(reference, {
+    io: req.app.get("io"),
+  });
+
+  return res.json({
+    success: true,
+    status: result.status,
+    message:
+      result.status === "paid"
+        ? "Payment verified successfully"
+        : result.status === "failed"
+          ? "Payment was not successful"
+          : "Payment is still pending",
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PAYSTACK — WEBHOOK (no auth — verified via HMAC signature instead)
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/payments/webhook
+// Mounted BEFORE router.use(authMiddleware) in paymentroutes.js.
+// Requires req.rawBody — see app.js express.json({ verify }) option.
+const handlePaystackWebhook = asyncHandler(async (req, res) => {
+  const signature = req.headers["x-paystack-signature"];
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+
+  if (!signature || !secret || !req.rawBody) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid webhook request" });
+  }
+
+  const expected = crypto
+    .createHmac("sha512", secret)
+    .update(req.rawBody)
+    .digest("hex");
+
+  const signatureBuf = Buffer.from(signature, "utf8");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  const isValid =
+    signatureBuf.length === expectedBuf.length &&
+    crypto.timingSafeEqual(signatureBuf, expectedBuf);
+
+  if (!isValid) {
+    console.warn(`[WEBHOOK] Invalid Paystack signature — IP: ${req.ip}`);
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid signature" });
+  }
+
+  const event = req.body;
+
+  // Ack immediately — Paystack retries aggressively on slow/non-2xx
+  // responses. Reconciliation happens after the response is sent.
+  res.status(200).json({ received: true });
+
+  if (event?.event !== "charge.success" || !event?.data?.reference) return;
+
+  try {
+    await finalizePaystackPayment(event.data.reference, {
+      io: req.app.get("io"),
+    });
+  } catch (err) {
+    console.error(
+      `[WEBHOOK] Failed to finalize ${event.data.reference}:`,
+      err.message,
+    );
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════
 module.exports = {
@@ -670,4 +991,7 @@ module.exports = {
   getAllPayments,
   verifyPayment,
   updatePaymentStatus,
+  initializePaystackPayment,
+  verifyPaystackPayment,
+  handlePaystackWebhook,
 };

@@ -35,10 +35,20 @@ const {
   getAllPayments,
   verifyPayment,
   updatePaymentStatus,
+  initializePaystackPayment,
+  verifyPaystackPayment,
+  handlePaystackWebhook,
 } = require("../controllers/paymentcontroller");
 
+// ════════════════════════════════════════════════════════════
+// PAYSTACK WEBHOOK — must be registered BEFORE router.use(authMiddleware)
+// below. Paystack calls this server-to-server with no JWT; it's
+// authenticated via HMAC signature inside the controller instead.
+// ════════════════════════════════════════════════════════════
+router.post("/webhook", handlePaystackWebhook);
+
 // ── Global Protection ────────────────────────────────────────
-// All payment routes require a valid JWT — 401 if missing/expired
+// All routes registered below this line require a valid JWT.
 router.use(authMiddleware);
 
 // ════════════════════════════════════════════════════════════
@@ -56,6 +66,32 @@ router.use(authMiddleware);
  * Rate limited — prevents duplicate payment submissions.
  */
 router.post("/", roleMiddleware(["tenant"]), paymentLimiter, makePayment);
+
+/**
+ * POST /api/payments/initialize
+ * Tenant starts a real Paystack transaction. Backend computes the
+ * authoritative amount + reference and returns Paystack's access_code
+ * for the frontend to open the popup with.
+ * Body: { tenancy_id, amount }
+ */
+router.post(
+  "/initialize",
+  roleMiddleware(["tenant"]),
+  paymentLimiter,
+  initializePaystackPayment,
+);
+
+/**
+ * GET /api/payments/verify/:reference
+ * Called by the frontend right after Paystack's popup closes.
+ * Re-verifies with Paystack directly and finalizes the payment
+ * (idempotent — safe even if the webhook already processed it).
+ */
+router.get(
+  "/verify/:reference",
+  roleMiddleware(["tenant"]),
+  verifyPaystackPayment,
+);
 
 /**
  * GET /api/payments
@@ -139,8 +175,3 @@ router.patch(
 );
 
 module.exports = router;
-
-
-
-
-
