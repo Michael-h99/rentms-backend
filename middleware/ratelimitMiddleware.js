@@ -76,6 +76,17 @@ const uploadLimiter = makeLimiter({
   message: "Too many file uploads. Please wait before uploading more files.",
 });
 
+// ── Contact Limiter ────────────────────────────────────────────
+// Route: public POST /api/contact (no auth — anyone can hit this)
+// Tighter than authLimiter since it's unauthenticated and sends
+// real email through Resend on every success.
+// 5 requests per 15 min per IP.
+const contactLimiter = makeLimiter({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: "Too many messages sent. Please try again later.",
+});
+
 // ── General Limiter ───────────────────────────────────────────
 // Applied broadly in app.js as a baseline across all routes.
 // 200 requests per 10 min per IP.
@@ -90,5 +101,6 @@ module.exports = {
   paymentLimiter,
   notificationLimiter,
   uploadLimiter,
+  contactLimiter,
   generalLimiter,
 };

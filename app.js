@@ -37,6 +37,7 @@ const notificationroutes = require("./routes/notificationroutes");
 const emailroutes = require("./routes/emailroutes");
 const pushroutes = require("./routes/pushroutes");
 const invitecoderoutes = require("./routes/invitecoderoutes");
+const contactroutes = require("./routes/contactroutes");
 
 const REQUIRED_ENV = [
   "JWT_SECRET",
@@ -193,6 +194,7 @@ app.use("/api/notifications", notificationroutes);
 app.use("/api/email", emailroutes);
 app.use("/api/push", pushroutes);
 app.use("/api/invite-codes", invitecoderoutes);
+app.use("/api/contact", contactroutes);
 
 app.get("/", (req, res) =>
   res.json({

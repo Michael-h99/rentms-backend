@@ -196,6 +196,8 @@ const sendPasswordResetEmail = async ({
 };
 
 module.exports = {
+  sendMail,
+  getResend,
   sendPaymentConfirmation,
   sendWelcomeEmail,
   sendPasswordResetEmail,
