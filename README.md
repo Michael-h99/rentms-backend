@@ -16,9 +16,11 @@ A full-stack web application for managing rental properties in Ghana. Built as a
 | Frontend           | HTML, CSS, Bootstrap 5, Vanilla JavaScript |
 | Backend            | Node.js, Express.js                        |
 | Database           | MySQL (Aiven Cloud)                        |
-| Auth               | JWT (JSON Web Tokens)                      |
+| Auth               | JWT (access + refresh tokens)              |
+| Payments           | Paystack (Mobile Money & Card)             |
+| Email              | Resend                                     |
+| Push Notifications | Web Push API                               |
 | File Uploads       | Multer                                     |
-| Email              | Nodemailer (Gmail SMTP)                    |
 | Real-time          | Socket.io                                  |
 | Hosting (Frontend) | Vercel                                     |
 | Hosting (Backend)  | Render                                     |
@@ -32,7 +34,8 @@ A full-stack web application for managing rental properties in Ghana. Built as a
 - Dashboard with stats (plazas, tenants, revenue, maintenance)
 - Plaza management with image uploads
 - Tenant management via invite codes
-- Payment tracking and receipts
+- Rent collection via Paystack (Mobile Money & Card), with automated PDF receipts
+- Payment tracking and history
 - Maintenance request management
 - Group messaging with tenants
 - Announcements and notifications
@@ -42,7 +45,8 @@ A full-stack web application for managing rental properties in Ghana. Built as a
 ### Tenant Portal
 
 - Dashboard with lease overview
-- Payment history
+- Pay rent online via Paystack (Mobile Money & Card)
+- Payment history and downloadable receipts
 - Maintenance request submission
 - Group chat with landlord
 - Notifications
@@ -88,16 +92,42 @@ node app.js
 ### Environment Variables (Backend)
 
 ```env
+# Server
 PORT=5000
+NODE_ENV=development
+BASE_URL=https://rentms-backend-5.onrender.com
+FRONTEND_URL=https://rentms-frontend-rust.vercel.app
+
+# Database (Aiven MySQL)
 DB_HOST=your_mysql_host
 DB_PORT=your_mysql_port
 DB_USER=your_db_user
 DB_PASSWORD=your_db_password
 DB_NAME=defaultdb
+
+# JWT
 JWT_SECRET=your_jwt_secret
-FRONTEND_URL=https://rentms-frontend-rust.vercel.app
-EMAIL_USER=your_gmail@gmail.com
-EMAIL_PASS=your_gmail_app_password
+JWT_EXPIRES_IN=1d
+JWT_REFRESH_SECRET=your_refresh_secret
+JWT_REFRESH_EXPIRES_IN=7d
+
+# Email (Resend)
+RESEND_API_KEY=your_resend_api_key
+EMAIL_FROM=your_verified_sender_email
+CONTACT_EMAIL=where_contact_form_messages_should_go
+
+# Push Notifications
+VAPID_PUBLIC_KEY=your_vapid_public_key
+VAPID_PRIVATE_KEY=your_vapid_private_key
+
+# Paystack
+PAYSTACK_SECRET_KEY=sk_test_or_live_key
+PAYSTACK_PUBLIC_KEY=pk_test_or_live_key
+
+# Misc
+RECEIPTS_PATH=./receipts
+MAX_FILE_SIZE_MB=10
+SEED_PASSWORD=only_used_by_the_db_seed_script
 ```
 
 ### Frontend Setup
@@ -129,7 +159,7 @@ rentms-backend/
 ├── controllers/    # Route handlers
 ├── middleware/     # Auth, upload, rate limiting
 ├── routes/         # API route definitions
-├── services/       # Notification, email services
+├── services/       # Payment, email, notification services
 ├── utils/          # DB, error handling, pagination
 └── app.js          # Entry point
 ```
@@ -138,20 +168,15 @@ rentms-backend/
 
 ## 🔐 Default Admin Account
 
-```
-Email:    admin@rentms.com
-Password: Admin@1234
-```
-
-> ⚠️ Change this password after first login in production.
+> ⚠️ **Removed from this README.** Publishing a hardcoded email/password in a public repository is a real security risk — anyone reading this file could use it. If you need a demo admin account for evaluation purposes, create one manually after deployment and share the credentials privately (email, not GitHub), not in version control.
 
 ---
 
 ## 👨‍💻 Author
 
-Michael kofi Sarpong-dua
-BSc Computer Science — Final Year Project  
-University, Ghana
+Michael Kofi Sarpong-Duah
+BSc Software Engineering — Final Year Project
+Ghana Communication Technology University (GCTU)
 
 ---
 
