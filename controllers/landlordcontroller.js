@@ -1,4 +1,5 @@
-﻿const db = require("../utils/db");
+﻿const axios = require("axios");
+const db = require("../utils/db");
 const { AppError, asyncHandler } = require("../utils/errorhandler");
 const { logActivity } = require("../utils/activitylogger");
 const NotificationService = require("../services/notificationservice");
@@ -465,6 +466,103 @@ const getRentPayments = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
+// PAYOUT ACCOUNT (Mobile Money / Bank — Paystack Subaccounts)
+// ============================================================
+
+// GET /api/landlord/payout-account/providers
+// Returns Ghana Mobile Money networks (MTN, Vodafone/Telecel,
+// AirtelTigo) so the frontend can show them as a dropdown.
+const getMobileMoneyProviders = asyncHandler(async (req, res) => {
+  const response = await axios.get(
+    "https://api.paystack.co/bank?country=ghana&type=mobile_money",
+    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
+  );
+
+  const providers = response.data.data.map((bank) => ({
+    name: bank.name,
+    code: bank.code,
+  }));
+
+  return res.json({ success: true, data: providers });
+});
+
+// GET /api/landlord/payout-account
+// Returns the landlord's current payout setup, if any, so the
+// frontend can show "already configured" vs. a setup form.
+const getPayoutAccount = asyncHandler(async (req, res) => {
+  const landlordId = Number(req.user.id);
+
+  const [[row]] = await db.execute(
+    `SELECT paystack_subaccount_code, payout_bank_code, payout_account_number
+     FROM users WHERE id = ?`,
+    [landlordId],
+  );
+
+  return res.json({
+    success: true,
+    data: {
+      is_configured: !!row?.paystack_subaccount_code,
+      payout_bank_code: row?.payout_bank_code || null,
+      payout_account_number: row?.payout_account_number || null,
+    },
+  });
+});
+
+// POST /api/landlord/payout-account
+// Body: { bank_code, account_number, business_name? }
+// Creates a Paystack subaccount so rent payments split directly to
+// this landlord's Mobile Money number or bank account. percentage_charge
+// is 0 — 100% goes to the landlord, 0% retained by the platform. This
+// is adjustable later per-subaccount without code changes.
+const setupPayoutAccount = asyncHandler(async (req, res) => {
+  const landlordId = Number(req.user.id);
+  const { bank_code, account_number, business_name } = req.body;
+
+  if (!bank_code || !account_number) {
+    throw new AppError("bank_code and account_number are required", 400);
+  }
+
+  const [[landlord]] = await db.execute(
+    `SELECT full_name FROM users WHERE id = ?`,
+    [landlordId],
+  );
+  if (!landlord) throw new AppError("Landlord account not found", 404);
+
+  const paystackResponse = await axios.post(
+    "https://api.paystack.co/subaccount",
+    {
+      business_name: business_name?.trim() || landlord.full_name,
+      settlement_bank: bank_code,
+      account_number: account_number.trim(),
+      percentage_charge: 0,
+    },
+    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
+  );
+
+  const subaccountCode = paystackResponse.data.data.subaccount_code;
+
+  await db.execute(
+    `UPDATE users
+     SET paystack_subaccount_code = ?, payout_bank_code = ?, payout_account_number = ?
+     WHERE id = ?`,
+    [subaccountCode, bank_code, account_number.trim(), landlordId],
+  );
+
+  await logActivity(
+    landlordId,
+    "settings_updated",
+    `Configured payout account (subaccount ${subaccountCode})`,
+    { ip: req.ip },
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Payout account configured successfully",
+    data: { subaccount_code: subaccountCode },
+  });
+});
+
+// ============================================================
 // MAINTENANCE
 // ============================================================
 
@@ -811,13 +909,11 @@ const sendGroupMessageLandlord = asyncHandler(async (req, res) => {
     { ip: req.ip },
   );
 
-  return res
-    .status(201)
-    .json({
-      success: true,
-      message: "Message sent successfully",
-      message_id: result.insertId,
-    });
+  return res.status(201).json({
+    success: true,
+    message: "Message sent successfully",
+    message_id: result.insertId,
+  });
 });
 
 const uploadPlazaImage = asyncHandler(async (req, res) => {
@@ -861,4 +957,7 @@ module.exports = {
   getGroupMembers,
   sendGroupMessageLandlord,
   uploadPlazaImage,
+  getMobileMoneyProviders,
+  getPayoutAccount,
+  setupPayoutAccount,
 };
