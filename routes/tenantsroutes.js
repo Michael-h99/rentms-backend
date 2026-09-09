@@ -31,7 +31,7 @@ const {
   sendGroupMessage,
   initializeRentPayment,
   verifyRentPayment,
-} = require("../controllers/tenantController");
+} = require("../controllers/tenantcontroller");
 
 // ── Global Protection ────────────────────────────────────────
 router.use(authMiddleware);
