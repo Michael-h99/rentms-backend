@@ -6,9 +6,19 @@
 // single source of truth for all lease operations.
 //
 // Uses schema views where available:
-//   v_active_tenancies  — active leases with full context
 //   v_expiring_leases   — leases expiring within N days
-//   v_overdue_tenants   — tenants with no payment this month
+//
+// NOTE: v_overdue_tenants is no longer used by this service.
+// Its definition ("no payment this month") is incompatible with
+// advance/multi-month rent payments — a tenant who pays 6 months
+// ahead would incorrectly show as overdue in month 2. getOverdue()
+// below now computes overdue status directly from
+// tenancies.rent_covered_until instead. The view can be left
+// unused or dropped; nothing else in this file depends on it.
+//
+// REQUIRES MIGRATION (not yet applied — run before deploying
+// rent payment feature):
+//   ALTER TABLE tenancies ADD COLUMN rent_covered_until DATE NULL;
 //
 // All methods throw AppError so controllers can forward
 // errors directly to globalErrorHandler via asyncHandler.
@@ -112,6 +122,8 @@ class LeaseService {
          t.id, t.tenant_id, t.plaza_id, t.invite_code_id,
          t.unit_number, t.rent_amount, t.security_deposit,
          t.lease_start, t.lease_end, t.renewal_date,
+         t.rent_covered_until,
+         (t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE()) AS is_overdue,
          t.status, t.created_at, t.updated_at,
          -- Tenant details
          u.username     AS tenant_username,
@@ -150,6 +162,8 @@ class LeaseService {
       `SELECT
          t.id, t.tenant_id, t.plaza_id, t.unit_number, t.rent_amount,
          t.security_deposit, t.lease_start, t.lease_end, t.renewal_date,
+         t.rent_covered_until,
+         (t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE()) AS is_overdue,
          t.status, t.created_at,
          u.full_name    AS tenant_name,
          u.email        AS tenant_email,
@@ -253,6 +267,8 @@ class LeaseService {
       `SELECT
          t.id, t.tenant_id, t.plaza_id, t.unit_number, t.rent_amount,
          t.security_deposit, t.lease_start, t.lease_end, t.renewal_date,
+         t.rent_covered_until,
+         (t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE()) AS is_overdue,
          t.status, t.created_at,
          u.full_name  AS tenant_name,
          u.email      AS tenant_email,
@@ -309,6 +325,8 @@ class LeaseService {
       `SELECT
          t.id, t.tenant_id, t.unit_number, t.rent_amount,
          t.security_deposit, t.lease_start, t.lease_end,
+         t.rent_covered_until,
+         (t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE()) AS is_overdue,
          t.status, t.created_at,
          u.full_name  AS tenant_name,
          u.email      AS tenant_email,
@@ -371,7 +389,10 @@ class LeaseService {
     const [rows] = await db.execute(
       `SELECT
          t.id, t.tenant_id, t.plaza_id, t.unit_number, t.rent_amount,
-         t.security_deposit, t.lease_start, t.lease_end, t.status, t.created_at,
+         t.security_deposit, t.lease_start, t.lease_end,
+         t.rent_covered_until,
+         (t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE()) AS is_overdue,
+         t.status, t.created_at,
          u.full_name    AS tenant_name,
          u.email        AS tenant_email,
          p.name         AS plaza_name,
@@ -399,6 +420,8 @@ class LeaseService {
   // ── getExpiring ──────────────────────────────────────────
   // Leases expiring within N days — uses schema view v_expiring_leases.
   // Default 30 days — used by cron jobs and email alerts.
+  // (Unrelated to rent payment — this tracks lease_end, the contract
+  // end date, not rent_covered_until.)
   static async getExpiring(daysAhead = 30) {
     const days = parseInt(daysAhead, 10);
     if (isNaN(days) || days < 1)
@@ -424,19 +447,42 @@ class LeaseService {
   }
 
   // ── getOverdue ───────────────────────────────────────────
-  // Tenants with no payment this month — uses schema view v_overdue_tenants.
-  // Optionally filter by landlord.
+  // Tenants whose rent coverage has lapsed.
+  //
+  // UPDATED: previously queried the v_overdue_tenants view, which
+  // defined "overdue" as "no payment recorded this calendar month."
+  // That broke as soon as multi-month/advance payments were
+  // supported — a tenant who paid 6 months ahead would still show
+  // as overdue in month 2. Now computed directly from
+  // tenancies.rent_covered_until, which tracks the date rent is
+  // actually paid through, regardless of which month payment landed in.
   static async getOverdue(landlord_id = null) {
+    const conditions = [
+      "t.status = 'active'",
+      "(t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE())",
+    ];
+    const params = [];
+
     if (landlord_id) {
       const landlordId = parseId(landlord_id);
       if (!landlordId) throw new AppError("Invalid landlord ID", 400);
-      const [rows] = await db.execute(
-        `SELECT * FROM v_overdue_tenants WHERE landlord_id = ?`,
-        [landlordId],
-      );
-      return rows;
+      conditions.push("p.landlord_id = ?");
+      params.push(landlordId);
     }
-    const [rows] = await db.execute(`SELECT * FROM v_overdue_tenants`);
+
+    const [rows] = await db.execute(
+      `SELECT
+         t.id AS tenancy_id, t.tenant_id, t.unit_number, t.rent_amount,
+         t.rent_covered_until,
+         u.full_name AS tenant_name, u.email AS tenant_email, u.phone AS tenant_phone,
+         p.id AS plaza_id, p.name AS plaza_name, p.landlord_id
+       FROM tenancies t
+       JOIN users  u ON u.id = t.tenant_id
+       JOIN plazas p ON p.id = t.plaza_id
+       WHERE ${conditions.join(" AND ")}
+       ORDER BY t.rent_covered_until ASC`,
+      params,
+    );
     return rows;
   }
 
@@ -525,6 +571,45 @@ class LeaseService {
     return true;
   }
 
+  // ── updateRentCoverage ───────────────────────────────────
+  // NEW: extends rent_covered_until by monthsPaid, anchored to
+  // whichever is later — today, or the tenant's existing coverage
+  // date — so paying ahead stacks instead of resetting.
+  // Called by tenantController.verifyRentPayment after a
+  // successful Paystack verification. Returns the new
+  // rent_covered_until date.
+  static async updateRentCoverage(id, monthsPaid, connection = null) {
+    const leaseId = parseId(id);
+    if (!leaseId) throw new AppError("Invalid lease ID", 400);
+
+    const months = parseInt(monthsPaid, 10);
+    if (isNaN(months) || months < 1) {
+      throw new AppError("monthsPaid must be a positive integer", 400);
+    }
+
+    const executor = connection || db;
+
+    const [result] = await executor.execute(
+      `UPDATE tenancies
+       SET rent_covered_until = DATE_ADD(
+             GREATEST(COALESCE(rent_covered_until, CURDATE()), CURDATE()),
+             INTERVAL ? MONTH
+           ),
+           updated_at = NOW()
+       WHERE id = ?`,
+      [months, leaseId],
+    );
+
+    if (result.affectedRows === 0) throw new AppError("Lease not found", 404);
+
+    const [[updated]] = await executor.execute(
+      `SELECT rent_covered_until FROM tenancies WHERE id = ?`,
+      [leaseId],
+    );
+
+    return updated?.rent_covered_until || null;
+  }
+
   // ── renew ────────────────────────────────────────────────
   // Renew a lease by extending the end date and setting renewal_date.
   // Atomically updates status to 'active' if it was expired.
@@ -596,7 +681,9 @@ class LeaseService {
            AND t.status = 'active')                 AS needs_expiry_update,
          SUM(t.lease_end BETWEEN CURDATE()
            AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)
-           AND t.status = 'active')                 AS expiring_soon
+           AND t.status = 'active')                 AS expiring_soon,
+         SUM((t.rent_covered_until IS NULL OR t.rent_covered_until < CURDATE())
+           AND t.status = 'active')                 AS overdue_tenants
        FROM tenancies t
        JOIN plazas p ON p.id = t.plaza_id
        WHERE p.landlord_id = ?`,

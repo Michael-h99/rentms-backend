@@ -1,9 +1,10 @@
 // controllers/tenantController.js
 // ============================================================
 // All tenant-scoped actions not covered by a dedicated controller.
-// Covers: Dashboard, Lease, Plaza, Groups
+// Covers: Dashboard, Lease, Plaza, Groups, Rent Payment
 // ============================================================
 
+const axios = require("axios");
 const db = require("../utils/db");
 const { AppError, asyncHandler } = require("../utils/errorhandler");
 const { logActivity } = require("../utils/activitylogger");
@@ -70,24 +71,13 @@ const getDashboard = asyncHandler(async (req, res) => {
   const unread_notifications =
     await NotificationService.getUnreadCount(tenantId);
 
-  let is_overdue = false;
-  if (lease) {
-    const [[{ paid }]] = await db.execute(
-      `SELECT COUNT(*) AS paid FROM payments
-       WHERE tenancy_id = ? AND status='paid'
-         AND YEAR(payment_date)  = YEAR(CURDATE())
-         AND MONTH(payment_date) = MONTH(CURDATE())`,
-      [lease.id],
-    );
-    is_overdue = paid === 0;
-  }
-
   return res.json({
     success: true,
     data: {
       lease,
       payment_summary: paymentSummary,
-      is_overdue,
+      is_overdue: lease ? !!lease.is_overdue : false,
+      rent_covered_until: lease ? lease.rent_covered_until : null,
       open_maintenance,
       unread_notifications,
     },
@@ -183,6 +173,138 @@ const getMyNeighbours = asyncHandler(async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// RENT PAYMENT
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/tenant/rent/initialize
+// Body: { months }
+const initializeRentPayment = asyncHandler(async (req, res) => {
+  const tenantId = req.user.id;
+  const months = parseInt(req.body.months, 10);
+
+  if (!months || months < 1) {
+    throw new AppError("Please select a valid number of months", 400);
+  }
+
+  const lease = await LeaseService.getActiveLease(tenantId);
+  if (!lease) throw new AppError("No active lease found", 404);
+
+  if (!lease.rent_amount) {
+    throw new AppError("Rent amount is not set for this tenancy", 400);
+  }
+  if (!lease.tenant_email) {
+    throw new AppError("No email on file for this account", 400);
+  }
+
+  const totalAmount = lease.rent_amount * months;
+  const amountInPesewas = Math.round(totalAmount * 100);
+
+  const paystackResponse = await axios.post(
+    "https://api.paystack.co/transaction/initialize",
+    {
+      email: lease.tenant_email,
+      amount: amountInPesewas,
+      metadata: {
+        tenant_id: tenantId,
+        tenancy_id: lease.id,
+        months_paid: months,
+      },
+    },
+    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
+  );
+
+  return res.status(200).json({
+    success: true,
+    authorization_url: paystackResponse.data.data.authorization_url,
+    reference: paystackResponse.data.data.reference,
+  });
+});
+
+// GET /api/tenant/rent/verify/:reference
+const verifyRentPayment = asyncHandler(async (req, res) => {
+  const tenantId = req.user.id;
+  const { reference } = req.params;
+
+  if (!reference) throw new AppError("Payment reference is required", 400);
+
+  const verifyResponse = await axios.get(
+    `https://api.paystack.co/transaction/verify/${reference}`,
+    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
+  );
+
+  const { status, metadata } = verifyResponse.data.data;
+
+  if (status !== "success") {
+    throw new AppError("Payment was not successful", 400);
+  }
+
+  const metaTenantId = parseId(metadata?.tenant_id);
+  const tenancyId = parseId(metadata?.tenancy_id);
+  const monthsPaid = parseInt(metadata?.months_paid, 10);
+
+  if (!metaTenantId || metaTenantId !== tenantId) {
+    throw new AppError(
+      "This payment reference does not belong to your account",
+      403,
+    );
+  }
+
+  if (!tenancyId || !monthsPaid || monthsPaid < 1) {
+    throw new AppError("Payment metadata is invalid or incomplete", 400);
+  }
+
+  const lease = await LeaseService.getActiveLease(tenantId);
+  if (!lease || lease.id !== tenancyId) {
+    throw new AppError(
+      "Tenancy mismatch — payment does not match your active lease",
+      403,
+    );
+  }
+
+  const amountPaid = lease.rent_amount * monthsPaid;
+
+  const newCoveredUntil = await LeaseService.updateRentCoverage(
+    tenancyId,
+    monthsPaid,
+  );
+
+  // ASSUMPTION: `payments` table has (or can have) `reference` and
+  // `months_covered` columns — still unconfirmed.
+  await db.execute(
+    `INSERT INTO payments (tenancy_id, amount, status, payment_date, reference, months_covered, created_at)
+     VALUES (?, ?, 'paid', CURDATE(), ?, ?, NOW())`,
+    [tenancyId, amountPaid, reference, monthsPaid],
+  );
+
+  if (lease.landlord_id) {
+    await NotificationService.create({
+      recipientId: lease.landlord_id,
+      senderId: tenantId,
+      type: "payment_received",
+      message: `${lease.tenant_name || req.user.username} paid rent for ${monthsPaid} month(s).`,
+      referenceId: tenancyId,
+      io: req.app.get("io"),
+    });
+  }
+
+  await logActivity(
+    tenantId,
+    "payment_verified",
+    `Paid rent for ${monthsPaid} month(s), reference ${reference}`,
+    { ip: req.ip },
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Payment verified and rent updated successfully",
+    data: {
+      rent_covered_until: newCoveredUntil,
+      months_paid: monthsPaid,
+    },
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
 // GROUPS
 // ═══════════════════════════════════════════════════════════════
 
@@ -193,7 +315,6 @@ const getMyNeighbours = asyncHandler(async (req, res) => {
 const getMyGroups = asyncHandler(async (req, res) => {
   const tenantId = Number(req.user.id);
 
-  /* Step 1: get tenant's active plaza_id */
   const [[tenancy]] = await db.execute(
     `SELECT t.plaza_id FROM tenancies t
      WHERE t.tenant_id = ? AND t.status = 'active'
@@ -201,10 +322,8 @@ const getMyGroups = asyncHandler(async (req, res) => {
     [tenantId],
   );
 
-  /* No active tenancy — return empty */
   if (!tenancy) return res.json({ success: true, groups: [] });
 
-  /* Step 2: get all groups for that plaza */
   const [groups] = await db.execute(
     `SELECT pg.id, pg.name, pg.plaza_id, pg.created_at,
        p.name AS plaza_name, p.location AS plaza_location
@@ -217,10 +336,8 @@ const getMyGroups = asyncHandler(async (req, res) => {
 
   if (!groups.length) return res.json({ success: true, groups: [] });
 
-  /* Step 3: for each group, get last message and member count separately */
   const enriched = await Promise.all(
     groups.map(async (g) => {
-      /* last message */
       let last_message = null,
         last_message_at = null;
       try {
@@ -236,7 +353,6 @@ const getMyGroups = asyncHandler(async (req, res) => {
         }
       } catch {}
 
-      /* member count */
       let member_count = 0;
       try {
         const [[cnt]] = await db.execute(
@@ -261,17 +377,6 @@ const joinGroup = asyncHandler(async (req, res) => {
 
   if (!invite_code) throw new AppError("invite_code is required", 400);
 
-  /* ─────────────────────────────────────────────────────────────
-     BUG FIX (ROOT CAUSE):
-     The original code queried the `invite_codes` table — which stores
-     REGISTRATION codes used when a new tenant signs up. These are
-     completely different from GROUP invite codes.
-
-     Group invite codes are stored in the `plaza_groups` table in the
-     `invite_code` column, generated by the landlord on the Messages page.
-
-     Fix: query `plaza_groups` directly using the invite_code column.
-  ───────────────────────────────────────────────────────────────── */
   const [[group]] = await db.execute(
     `SELECT
        pg.id, pg.name, pg.plaza_id, pg.invite_code,
@@ -286,8 +391,6 @@ const joinGroup = asyncHandler(async (req, res) => {
 
   if (!group) throw new AppError("Invalid or expired invite code", 400);
 
-  /* FIX: verify tenant has an active tenancy in this plaza
-     A tenant should only be able to join groups for their own plaza */
   const [[tenancy]] = await db.execute(
     `SELECT id FROM tenancies
      WHERE tenant_id = ? AND plaza_id = ? AND status = 'active'
@@ -301,7 +404,6 @@ const joinGroup = asyncHandler(async (req, res) => {
       403,
     );
 
-  /* FIX: check if already a member before inserting */
   const [[{ already_member }]] = await db.execute(
     `SELECT COUNT(*) AS already_member FROM group_members
      WHERE group_id = ? AND user_id = ?`,
@@ -309,8 +411,6 @@ const joinGroup = asyncHandler(async (req, res) => {
   );
 
   if (already_member > 0) {
-    /* Already a member — return success with group info so frontend
-       can open the chat without showing an error */
     return res.status(200).json({
       success: true,
       message: "You are already a member of this group",
@@ -318,13 +418,11 @@ const joinGroup = asyncHandler(async (req, res) => {
     });
   }
 
-  /* Insert into group_members */
   await db.execute(
     `INSERT INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, NOW())`,
     [group.id, tenantId],
   );
 
-  /* Notify landlord */
   await NotificationService.create({
     recipientId: group.landlord_id,
     senderId: tenantId,
@@ -397,8 +495,6 @@ const getGroupMessages = asyncHandler(async (req, res) => {
   const groupId = parseId(req.params.group_id);
   if (!groupId) throw new AppError("Invalid group ID", 400);
 
-  /* FIX: membership check now also accepts tenants who belong to the plaza
-     even if they haven't been inserted into group_members yet */
   const [[{ is_member }]] = await db.execute(
     `SELECT COUNT(*) AS is_member
      FROM plaza_groups pg
@@ -420,7 +516,6 @@ const getGroupMessages = asyncHandler(async (req, res) => {
   );
 
   const [messages] = await db.query(
-    /* FIX: return both 'content' and 'message' alias for frontend compatibility */
     `SELECT
        gm.id, gm.group_id, gm.sender_id,
        gm.content,
@@ -449,7 +544,6 @@ const sendGroupMessage = asyncHandler(async (req, res) => {
   const groupId = parseId(req.params.group_id);
   if (!groupId) throw new AppError("Invalid group ID", 400);
 
-  /* FIX: accept both 'content' and 'message' field names */
   const content = (req.body.content || req.body.message || "").trim();
 
   if (!content && !req.file)
@@ -467,7 +561,6 @@ const sendGroupMessage = asyncHandler(async (req, res) => {
     file_type = resolveFileType(req.file.mimetype);
   }
 
-  /* FIX: membership check via plaza tenancy (same as getGroupMessages) */
   const [[{ is_member }]] = await db.execute(
     `SELECT COUNT(*) AS is_member
      FROM plaza_groups pg
@@ -485,7 +578,6 @@ const sendGroupMessage = asyncHandler(async (req, res) => {
     [groupId, tenantId, content || null, file_url, file_type],
   );
 
-  /* Emit real-time event */
   const io = req.app.get("io");
   if (io) {
     io.to(`group_${groupId}`).emit("group_message", {
@@ -499,13 +591,11 @@ const sendGroupMessage = asyncHandler(async (req, res) => {
     });
   }
 
-  /* Notify all other group members */
   const [members] = await db.execute(
     `SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ?`,
     [groupId, tenantId],
   );
 
-  /* FIX: also notify the landlord of this plaza even if not in group_members */
   const [[plazaRow]] = await db.execute(
     `SELECT p.landlord_id FROM plaza_groups pg
      JOIN plazas p ON p.id = pg.plaza_id WHERE pg.id = ?`,
@@ -556,4 +646,6 @@ module.exports = {
   leaveGroup,
   getGroupMessages,
   sendGroupMessage,
+  initializeRentPayment,
+  verifyRentPayment,
 };

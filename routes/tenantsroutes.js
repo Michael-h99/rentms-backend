@@ -29,7 +29,9 @@ const {
   leaveGroup,
   getGroupMessages,
   sendGroupMessage,
-} = require("../controllers/tenantcontroller");
+  initializeRentPayment,
+  verifyRentPayment,
+} = require("../controllers/tenantController");
 
 // ── Global Protection ────────────────────────────────────────
 router.use(authMiddleware);
@@ -46,6 +48,12 @@ router.get("/dashboard", getDashboard);
 router.get("/lease", getMyLease);
 router.get("/lease/history", getLeaseHistory);
 router.post("/lease/renewal", requestLeaseRenewal);
+
+// ════════════════════════════════════════════════════════════
+// RENT PAYMENT
+// ════════════════════════════════════════════════════════════
+router.post("/rent/initialize", generalLimiter, initializeRentPayment);
+router.get("/rent/verify/:reference", verifyRentPayment);
 
 // ════════════════════════════════════════════════════════════
 // PLAZA
