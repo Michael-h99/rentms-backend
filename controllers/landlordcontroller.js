@@ -1,5 +1,4 @@
-﻿const axios = require("axios");
-const db = require("../utils/db");
+﻿const db = require("../utils/db");
 const { AppError, asyncHandler } = require("../utils/errorhandler");
 const { logActivity } = require("../utils/activitylogger");
 const NotificationService = require("../services/notificationservice");
@@ -466,103 +465,6 @@ const getRentPayments = asyncHandler(async (req, res) => {
 });
 
 // ============================================================
-// PAYOUT ACCOUNT (Mobile Money / Bank — Paystack Subaccounts)
-// ============================================================
-
-// GET /api/landlord/payout-account/providers
-// Returns Ghana Mobile Money networks (MTN, Vodafone/Telecel,
-// AirtelTigo) so the frontend can show them as a dropdown.
-const getMobileMoneyProviders = asyncHandler(async (req, res) => {
-  const response = await axios.get(
-    "https://api.paystack.co/bank?country=ghana&type=mobile_money",
-    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
-  );
-
-  const providers = response.data.data.map((bank) => ({
-    name: bank.name,
-    code: bank.code,
-  }));
-
-  return res.json({ success: true, data: providers });
-});
-
-// GET /api/landlord/payout-account
-// Returns the landlord's current payout setup, if any, so the
-// frontend can show "already configured" vs. a setup form.
-const getPayoutAccount = asyncHandler(async (req, res) => {
-  const landlordId = Number(req.user.id);
-
-  const [[row]] = await db.execute(
-    `SELECT paystack_subaccount_code, payout_bank_code, payout_account_number
-     FROM users WHERE id = ?`,
-    [landlordId],
-  );
-
-  return res.json({
-    success: true,
-    data: {
-      is_configured: !!row?.paystack_subaccount_code,
-      payout_bank_code: row?.payout_bank_code || null,
-      payout_account_number: row?.payout_account_number || null,
-    },
-  });
-});
-
-// POST /api/landlord/payout-account
-// Body: { bank_code, account_number, business_name? }
-// Creates a Paystack subaccount so rent payments split directly to
-// this landlord's Mobile Money number or bank account. percentage_charge
-// is 0 — 100% goes to the landlord, 0% retained by the platform. This
-// is adjustable later per-subaccount without code changes.
-const setupPayoutAccount = asyncHandler(async (req, res) => {
-  const landlordId = Number(req.user.id);
-  const { bank_code, account_number, business_name } = req.body;
-
-  if (!bank_code || !account_number) {
-    throw new AppError("bank_code and account_number are required", 400);
-  }
-
-  const [[landlord]] = await db.execute(
-    `SELECT full_name FROM users WHERE id = ?`,
-    [landlordId],
-  );
-  if (!landlord) throw new AppError("Landlord account not found", 404);
-
-  const paystackResponse = await axios.post(
-    "https://api.paystack.co/subaccount",
-    {
-      business_name: business_name?.trim() || landlord.full_name,
-      settlement_bank: bank_code,
-      account_number: account_number.trim(),
-      percentage_charge: 0,
-    },
-    { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } },
-  );
-
-  const subaccountCode = paystackResponse.data.data.subaccount_code;
-
-  await db.execute(
-    `UPDATE users
-     SET paystack_subaccount_code = ?, payout_bank_code = ?, payout_account_number = ?
-     WHERE id = ?`,
-    [subaccountCode, bank_code, account_number.trim(), landlordId],
-  );
-
-  await logActivity(
-    landlordId,
-    "settings_updated",
-    `Configured payout account (subaccount ${subaccountCode})`,
-    { ip: req.ip },
-  );
-
-  return res.status(200).json({
-    success: true,
-    message: "Payout account configured successfully",
-    data: { subaccount_code: subaccountCode },
-  });
-});
-
-// ============================================================
 // MAINTENANCE
 // ============================================================
 
@@ -938,6 +840,109 @@ const uploadPlazaImage = asyncHandler(async (req, res) => {
   });
 });
 
+const sendAnnouncement = asyncHandler(async (req, res) => {
+  const landlordId = req.user.id;
+  const { title, message, target_type, plaza_id } = req.body;
+  if (!message || !message.trim())
+    throw new AppError("Message is required", 400);
+
+  let plazaIds = [];
+  if (target_type === "plaza") {
+    const pid = parseId(plaza_id);
+    if (!pid) throw new AppError("plaza_id is required", 400);
+    await requirePlazaOwnership(pid, landlordId);
+    plazaIds = [pid];
+  } else {
+    const [rows] = await db.execute(
+      `SELECT id FROM plazas WHERE landlord_id = ? AND deleted_at IS NULL`,
+      [landlordId],
+    );
+    plazaIds = rows.map((r) => r.id);
+  }
+  if (!plazaIds.length)
+    throw new AppError("You have no plazas to send to", 400);
+
+  const fullMessage =
+    title && title.trim()
+      ? `${title.trim()}\n\n${message.trim()}`
+      : message.trim();
+  const groupKey = `announcement_${landlordId}_${Date.now()}`;
+  let totalSent = 0;
+
+  for (const pid of plazaIds) {
+    const [rows] = await db.execute(
+      `SELECT DISTINCT t.tenant_id AS id FROM tenancies t
+       WHERE t.plaza_id = ? AND t.status = 'active'`,
+      [pid],
+    );
+    const recipientIds = rows.map((r) => r.id);
+    if (!recipientIds.length) continue;
+    await NotificationService.createBulk({
+      recipientIds,
+      senderId: landlordId,
+      type: "announcement",
+      message: fullMessage,
+      groupedKey: groupKey,
+      io: req.app.get("io"),
+    });
+    totalSent += recipientIds.length;
+  }
+
+  await logActivity(
+    landlordId,
+    "announcement_sent",
+    `Sent announcement to ${totalSent} tenant(s)`,
+    { ip: req.ip },
+  );
+
+  return res.json({
+    success: true,
+    message: "Announcement sent",
+    sent: totalSent,
+  });
+});
+
+const getAnnouncements = asyncHandler(async (req, res) => {
+  const landlordId = req.user.id;
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(50, parseInt(req.query.limit, 10) || 20);
+  const offset = Number((page - 1) * limit);
+
+  const [[{ total }]] = await db.execute(
+    `SELECT COUNT(DISTINCT grouped_key) AS total FROM notifications
+     WHERE sender_id = ? AND type = 'announcement'`,
+    [landlordId],
+  );
+
+  const [rows] = await db.execute(
+    `SELECT grouped_key, MIN(message) AS message, MIN(created_at) AS created_at,
+            COUNT(*) AS sent_count
+     FROM notifications
+     WHERE sender_id = ? AND type = 'announcement'
+     GROUP BY grouped_key
+     ORDER BY created_at DESC
+     LIMIT ? OFFSET ?`,
+    [landlordId, Number(limit), Number(offset)],
+  );
+  rows.forEach((r) => (r.id = r.grouped_key));
+
+  return res.json({
+    success: true,
+    ...buildPaginationResponse({ data: rows, total, page, limit }),
+  });
+});
+
+const deleteAnnouncement = asyncHandler(async (req, res) => {
+  const landlordId = req.user.id;
+  const groupKey = req.params.groupKey;
+  const [result] = await db.execute(
+    `DELETE FROM notifications WHERE sender_id = ? AND type = 'announcement' AND grouped_key = ?`,
+    [landlordId, groupKey],
+  );
+  if (!result.affectedRows) throw new AppError("Announcement not found", 404);
+  return res.json({ success: true, message: "Announcement deleted" });
+});
+
 module.exports = {
   getLandlordStats,
   getLandlordPlazas,
@@ -957,7 +962,7 @@ module.exports = {
   getGroupMembers,
   sendGroupMessageLandlord,
   uploadPlazaImage,
-  getMobileMoneyProviders,
-  getPayoutAccount,
-  setupPayoutAccount,
+  sendAnnouncement,
+  getAnnouncements,
+  deleteAnnouncement,
 };

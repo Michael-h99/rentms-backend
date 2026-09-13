@@ -31,6 +31,9 @@ const {
   getGroupMembers,
   sendGroupMessageLandlord,
   uploadPlazaImage,
+  sendAnnouncement,
+  getAnnouncements,
+  deleteAnnouncement,
 } = require("../controllers/landlordcontroller");
 
 router.use(authMiddleware);
@@ -98,6 +101,13 @@ router.delete(
 
 // PAYMENTS
 router.get("/payments", getRentPayments);
+
+// ════════════════════════════════════════════════════════════
+// ANNOUNCEMENTS
+// ════════════════════════════════════════════════════════════
+router.post("/announcements", sendAnnouncement);
+router.get("/announcements", getAnnouncements);
+router.delete("/announcements/:groupKey", deleteAnnouncement);
 
 // MAINTENANCE
 router.get("/maintenance", getMaintenanceRequests);
