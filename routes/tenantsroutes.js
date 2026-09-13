@@ -1,4 +1,4 @@
-// routes/tenantsroutes.js
+// routes/tenantRoutes.js
 // ============================================================
 // Base path: /api/tenant
 // All routes require valid JWT + tenant role.
@@ -21,6 +21,7 @@ const {
   getDashboard,
   getMyLease,
   getLeaseHistory,
+  getPaymentHistory,
   requestLeaseRenewal,
   getMyPlaza,
   getMyNeighbours,
@@ -29,8 +30,6 @@ const {
   leaveGroup,
   getGroupMessages,
   sendGroupMessage,
-  initializeRentPayment,
-  verifyRentPayment,
 } = require("../controllers/tenantcontroller");
 
 // ── Global Protection ────────────────────────────────────────
@@ -50,10 +49,9 @@ router.get("/lease/history", getLeaseHistory);
 router.post("/lease/renewal", requestLeaseRenewal);
 
 // ════════════════════════════════════════════════════════════
-// RENT PAYMENT
+// PAYMENTS
 // ════════════════════════════════════════════════════════════
-router.post("/rent/initialize", generalLimiter, initializeRentPayment);
-router.get("/rent/verify/:reference", verifyRentPayment);
+router.get("/payments", getPaymentHistory);
 
 // ════════════════════════════════════════════════════════════
 // PLAZA
