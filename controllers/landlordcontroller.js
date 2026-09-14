@@ -394,6 +394,57 @@ const removeTenant = asyncHandler(async (req, res) => {
   return res.json({ success: true, message: "Tenancy ended successfully" });
 });
 
+const updateTenancy = asyncHandler(async (req, res) => {
+  const landlordId = Number(req.user.id);
+  const tenancyId = parseId(req.params.id);
+  if (!tenancyId) throw new AppError("Invalid tenancy ID", 400);
+
+  const { lease_end, rent_amount } = req.body;
+  if (!lease_end) throw new AppError("lease_end is required", 400);
+
+  const [[tenancy]] = await db.execute(
+    `SELECT t.id, t.tenant_id, u.full_name AS tenant_name, p.name AS plaza_name
+     FROM tenancies t JOIN plazas p ON p.id = t.plaza_id JOIN users u ON u.id = t.tenant_id
+     WHERE t.id = ? AND p.landlord_id = ?`,
+    [Number(tenancyId), landlordId],
+  );
+  if (!tenancy) throw new AppError("Tenancy not found or access denied", 403);
+
+  const newRent = rent_amount ? parseFloat(rent_amount) : null;
+  if (rent_amount && (isNaN(newRent) || newRent <= 0))
+    throw new AppError("rent_amount must be a positive number", 400);
+
+  const isFutureEnd = new Date(lease_end) > new Date();
+
+  await db.execute(
+    `UPDATE tenancies
+     SET lease_end = ?,
+         rent_amount = COALESCE(?, rent_amount),
+         status = ?,
+         updated_at = NOW()
+     WHERE id = ?`,
+    [lease_end, newRent, isFutureEnd ? "active" : "expired", Number(tenancyId)],
+  );
+
+  await NotificationService.create({
+    recipientId: tenancy.tenant_id,
+    senderId: landlordId,
+    type: "lease_renewed",
+    message: `Your lease at ${tenancy.plaza_name} has been updated. New end date: ${lease_end}.`,
+    referenceId: tenancyId,
+    io: req.app.get("io"),
+  });
+
+  await logActivity(
+    landlordId,
+    "lease_renewed",
+    `Updated lease for tenancy ${tenancyId} (tenant "${tenancy.tenant_name}")`,
+    { ip: req.ip },
+  );
+
+  return res.json({ success: true, message: "Lease updated successfully" });
+});
+
 // ============================================================
 // PAYMENTS
 // ============================================================
@@ -953,6 +1004,7 @@ module.exports = {
   getPlazaTenants,
   inviteTenant,
   removeTenant,
+  updateTenancy,
   getRentPayments,
   getMaintenanceRequests,
   updateMaintenanceStatus,

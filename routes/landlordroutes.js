@@ -22,6 +22,7 @@ const {
   getPlazaTenants,
   inviteTenant,
   removeTenant,
+  updateTenancy,
   getRentPayments,
   getMaintenanceRequests,
   updateMaintenanceStatus,
@@ -98,6 +99,7 @@ router.delete(
   ownershipMiddleware("tenancy"),
   removeTenant,
 );
+router.put("/tenancies/:id", ownershipMiddleware("tenancy"), updateTenancy);
 
 // PAYMENTS
 router.get("/payments", getRentPayments);
